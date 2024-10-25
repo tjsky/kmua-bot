@@ -12,7 +12,7 @@ if all((openai_api, openai_key, openai_model)):
     import openai
 
     try:
-        openai_client = openai.OpenAI(
+        openai_client = openai.AsyncOpenAI(
             base_url=openai_api,
             api_key=openai_key,
         )

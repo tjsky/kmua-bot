@@ -64,7 +64,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     no_decision = True
     if _enable_ai_decision:
-        resp = common.openai_client.chat.completions.create(
+        resp = await common.openai_client.chat.completions.create(
             model=common.openai_model,
             messages=[
                 _ai_decision_system_message,
@@ -137,7 +137,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "content": message_text,
             }
         )
-        resp = common.openai_client.chat.completions.create(
+        resp = await common.openai_client.chat.completions.create(
             model=common.openai_model,
             messages=contents,
         )
