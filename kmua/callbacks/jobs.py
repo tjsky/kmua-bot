@@ -4,10 +4,10 @@ import gc
 from telegram.ext import ContextTypes
 
 from kmua import common, dao
+from kmua.config import settings
 from kmua.logger import logger
 
 from .waifu import send_waifu_graph
-from kmua.config import settings
 
 
 async def clean_data(context: ContextTypes.DEFAULT_TYPE):

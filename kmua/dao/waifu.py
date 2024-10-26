@@ -1,8 +1,9 @@
-from itertools import chain
 import random
+from itertools import chain
 
 from telegram import Chat, User
 from telegram.constants import ChatID
+
 import kmua.dao.association as association_dao
 import kmua.dao.chat as chat_dao
 import kmua.dao.user as user_dao

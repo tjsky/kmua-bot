@@ -1,11 +1,13 @@
 import json
 from typing import Any, Generator
-from sqlalchemy import func
+
 import sqlalchemy
-from telegram import Chat
+from sqlalchemy import func
 from sqlalchemy.sql import update
+from telegram import Chat
+
 from kmua.dao._db import _db, commit
-from kmua.models.models import ChatData, Quote, UserData, ChatConfig
+from kmua.models.models import ChatConfig, ChatData, Quote, UserData
 
 
 def _get_stmt(chat_id: int, key: str, value: Any) -> sqlalchemy.sql.Update:
