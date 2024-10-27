@@ -28,9 +28,6 @@ from kmua.middlewares import after_middleware, before_middleware
 
 
 async def init_data(app: Application):
-    """
-    初始化数据
-    """
     logger.info("initing commands")
     await app.bot.set_my_commands(
         [
@@ -41,6 +38,9 @@ async def init_data(app: Application):
             ("d", "删除语录|管理群语录"),
             ("qrand", "随机语录"),
             ("t", "获取头衔|互赠头衔"),
+            ("id", "获取聊天ID"),
+            ("ip", "获取IP信息"),
+            ("setu", "随机涩图"),
             ("config", "更改群组设置"),
             ("help", "帮助|更多功能"),
         ]
@@ -49,9 +49,6 @@ async def init_data(app: Application):
 
 
 async def stop(app: Application):
-    """
-    关闭数据库连接
-    """
     logger.debug("close database connection...")
     db.commit()
     db.close()
