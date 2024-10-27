@@ -52,7 +52,7 @@ class UserData(Base):
 
     is_married = Column(Boolean, default=False)
     married_waifu_id = Column(BigInteger, default=None, index=True)
-    waifu_mention = Column(Boolean, default=True)
+    waifu_mention = Column(Boolean, default=False)
 
     is_bot = Column(Boolean, default=False)
     is_real_user = Column(Boolean, default=True)  # 频道身份, bot, 匿名用户等 为 False
