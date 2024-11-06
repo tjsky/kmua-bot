@@ -1,4 +1,7 @@
 import datetime
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytz
 import uvloop
@@ -25,6 +28,24 @@ from kmua.handlers import (
 )
 from kmua.logger import logger
 from kmua.middlewares import after_middleware, before_middleware
+
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(
+            json.dumps({"status": "ok", "message": "kmua is running"}).encode("utf-8")
+        )
+
+
+def run_server():
+    server_address = (
+        settings.get("health_check_host", "::"),
+        settings.get("health_check_port", 39848),
+    )
+    httpd = HTTPServer(server_address, HealthCheckHandler)
+    httpd.serve_forever()
 
 
 async def init_data(app: Application):
@@ -57,7 +78,7 @@ async def stop(app: Application):
     logger.success("stopped bot")
 
 
-def run():
+def run_bot():
     """
     启动bot
     """
@@ -134,4 +155,8 @@ def run():
         )
 
 
-run()
+if __name__ == "__main__":
+    if all((settings.get("health_check_host"), settings.get("health_check_host"))):
+        logger.info("running health check server...")
+        threading.Thread(target=run_server, daemon=True).start()
+    run_bot()
