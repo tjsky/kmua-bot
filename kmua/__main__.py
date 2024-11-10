@@ -38,6 +38,9 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
             json.dumps({"status": "ok", "message": "kmua is running"}).encode("utf-8")
         )
 
+    def log_message(self, format, *args):
+        return
+
 
 def run_server():
     server_address = (
