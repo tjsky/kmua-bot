@@ -176,8 +176,8 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         await _keyword_reply_without_save(update, context, message_text)
     finally:
-        if len(contents) > 16:
-            contents = contents[-16:]
+        if len(contents) > settings.get("openai_max_contents", 16):
+            contents = contents[-settings.get("openai_max_contents", 16) :]
             common.redis_client.set(
                 f"kmua_contents_{update.effective_user.id}",
                 pickle.dumps(contents),
