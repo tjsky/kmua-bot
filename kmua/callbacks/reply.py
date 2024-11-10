@@ -50,7 +50,6 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"[{update.effective_chat.title}]({update.effective_user.name})"
         + f" {update.effective_message.text}"
     )
-    is_aonymous = update.effective_message.sender_chat is not None
     message_text = update.effective_message.text.replace(
         context.bot.username, ""
     ).lower()
@@ -100,10 +99,6 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
             no_decision = True
 
     if not no_decision:  # 如果已决策, 不再回复.
-        return
-
-    if is_aonymous:
-        await _keyword_reply_without_save(update, context, message_text)
         return
 
     if update.effective_chat.type in (
@@ -200,6 +195,10 @@ async def _keyword_reply(
             if keyword == "晚安":
                 await oyasumi(update, context)
     if not all_resplist:
+        await update.effective_message.reply_text(
+            text=random.choice(common.default_resplist),
+            quote=True,
+        )
         return
     sent_message = await update.effective_message.reply_text(
         text=random.choice(all_resplist),
@@ -241,8 +240,8 @@ async def _keyword_reply(
                 "content": sent_message.text,
             }
         )
-        if len(contents) > 16:
-            contents = contents[-16:]
+        if len(contents) > settings.get("openai_max_contents", 16):
+            contents = contents[-settings.get("openai_max_contents", 16) :]
         common.redis_client.set(
             f"kmua_contents_{update.effective_user.id}",
             pickle.dumps(contents),
@@ -264,6 +263,11 @@ async def _keyword_reply_without_save(
     if all_resplist:
         await update.effective_message.reply_text(
             text=random.choice(all_resplist),
+            quote=True,
+        )
+    else:
+        await update.effective_message.reply_text(
+            text=random.choice(common.default_resplist),
             quote=True,
         )
 
