@@ -11,7 +11,7 @@ from kmua import config, dao
 from kmua.config import settings
 from kmua.logger import logger
 
-_manyacg_api_url: str = settings.get("manyacg_api")
+_manyacg_api_url: str = settings.get("manyacg_api", "https://api.manyacg.top/v1")
 _manyacg_api_url = _manyacg_api_url.removesuffix("/") if _manyacg_api_url else None
 
 if _manyacg_api_url:
