@@ -30,6 +30,9 @@ async def clean_data(context: ContextTypes.DEFAULT_TYPE):
                     settings.get("avatar_expire", 1)
                 )
                 logger.debug(f"Cleaned {count} inactived users' avatar")
+        else:
+            count = dao.clear_inactived_users_avatar(settings.get("avatar_expire", 1))
+            logger.debug(f"Cleaned {count} inactived users' avatar")
         gc.collect()
         logger.success("Data has been cleaned")
         context.bot_data["cleaning_data"] = False
