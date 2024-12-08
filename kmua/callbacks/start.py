@@ -53,7 +53,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dao.commit()
     photo = db_bot_user.avatar_big_id
     if not photo:
-        photo = common.get_big_avatar_bytes(context.bot.id, context)
+        photo = await common.get_big_avatar_bytes(context.bot.id, context)
     sent_message = await update.effective_message.reply_photo(
         photo=photo,
         caption="Nya~",
