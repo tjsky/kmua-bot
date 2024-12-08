@@ -10,6 +10,8 @@ on:
       - "README.md"
       - "LICENSE"
       - ".github/**"
+      - "docker-compose.yml"
+      - "settings.toml"
   workflow_dispatch:
 
 jobs:
