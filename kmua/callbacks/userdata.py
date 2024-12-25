@@ -125,7 +125,7 @@ async def refresh_user_data_by_id(update: Update, context: ContextTypes.DEFAULT_
 
     chat_id = context.args[0]
     if not re.match(r"^-?\d+$", chat_id):
-        await update.effective_message.reply_text("请不要输入奇怪的东西")
+        await update.effective_message.reply_text("请不要插入奇怪的东西")
         return
 
     user = update.effective_user

@@ -35,7 +35,7 @@ async def super_resolute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args:
         task_id = context.args[0]
         if not re.match(r"^\d+-\d+$", task_id):
-            await message.reply_text("请不要输入奇怪的东西")
+            await message.reply_text("请不要插入奇怪的东西")
             return
         if common.redis_client:
             file_id = common.redis_client.get(f"kmua_sr_{task_id}")

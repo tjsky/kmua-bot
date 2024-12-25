@@ -156,7 +156,7 @@ async def set_quote_probability(update: Update, context: ContextTypes.DEFAULT_TY
     float_pattern = re.compile(r"^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$")
     value = context.args[0]
     if not float_pattern.match(value) or len(value) > 8:
-        await message.reply_text("请不要输入奇怪的东西> <")
+        await message.reply_text("请不要插入奇怪的东西> <")
         return
     try:
         probability = float(value)
