@@ -28,7 +28,6 @@ services:
     volumes:
       - ./data:/kmua/data
       - ./logs:/kmua/logs
-      - ./.secrets:/kmua/.secrets
     env_file:
       - .env
     network_mode: host
@@ -44,7 +43,11 @@ services:
 - `KMUA_LOG_RETENTION_DAYS` - 日志保留天数
 - `KMUA_DB_URL` - 数据库连接地址, 默认 `sqlite:///./data/kmua.db`
 - `KMUA_MAX_DB_SIZE` - sqlite 数据库文件最大大小, 到达后自动清理头像缓存, 默认 100MB
-- `TZ` - 时区, 默认 `Asia/Shanghai`.
+- `KMUA_AVATAR_EXPIRE` - 头像缓存过期时间, 默认 1 天
+- `TZ` - 时区, 默认 `Asia/Shanghai`
+- `KMUA_HEALTH_CHECK_ENABLE` - 是否启用健康检查, 默认 `False`
+- `KMUA_HEALTH_CHECK_PORT` - 健康检查API监听端口, 默认 `39848`
+- `KMUA_HEALTH_CHECK_HOST` - 健康检查API监听地址, 默认 `0.0.0.0`
 
 #### Bot API
 
@@ -74,10 +77,6 @@ Redis 可能是其他扩展功能的依赖
 ##### ManyACG (随机涩图)
 
 - `KMUA_MANYACG_API` - ManyACG API 地址
-
-##### Bilibili link (b 站链接转换)
-
-- `KMUA_BILILINK_CONVERT_API` - Bilibili 链接转换 API 地址
 
 ##### NSFW 图像分类
 
