@@ -16,7 +16,6 @@ _enable_search = common.meili_client is not None and common.redis_client is not 
 
 async def search_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _enable_search:
-        await update.effective_message.reply_text("没有接入这个功能哦")
         return
     chat = update.effective_chat
     if not dao.get_chat_message_search_enabled(chat):
