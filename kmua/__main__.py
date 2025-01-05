@@ -44,7 +44,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
 def run_server():
     server_address = (
-        settings.get("health_check_host", "::"),
+        settings.get("health_check_host", "0.0.0.0"),
         settings.get("health_check_port", 39848),
     )
     httpd = HTTPServer(server_address, HealthCheckHandler)
@@ -159,7 +159,7 @@ def run_bot():
 
 
 if __name__ == "__main__":
-    if all((settings.get("health_check_host"), settings.get("health_check_host"))):
+    if settings.get("health_check_enable"):
         logger.info("running health check server...")
         threading.Thread(target=run_server, daemon=True).start()
     run_bot()
