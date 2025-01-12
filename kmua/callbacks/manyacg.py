@@ -5,7 +5,7 @@ import re
 import httpx
 from PIL import Image
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
-from telegram.constants import ChatAction, ParseMode
+from telegram.constants import ChatAction, ChatType, ParseMode
 from telegram.error import TimedOut
 from telegram.ext import ContextTypes
 from telegram.helpers import escape_markdown
@@ -177,6 +177,10 @@ ARTWORK_ALL_REGEX = [
 async def parse_artwork(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _manyacg_api_key:
         return
+    chat = update.effective_chat
+    if chat.type in (ChatType.SUPERGROUP, ChatType.GROUP):
+        if not dao.get_chat_config(chat).parse_artwork_enabled:
+            return
     text = update.effective_message.text
     artwork_url = ""
     for regex in ARTWORK_ALL_REGEX:

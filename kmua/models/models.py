@@ -109,6 +109,7 @@ class ChatConfig:
     ai_reply: bool = True
     setu_enabled: bool = True
     convert_b23_enabled: bool = True
+    parse_artwork_enabled: bool = True
 
     @staticmethod
     def from_dict(data: dict):
@@ -124,6 +125,7 @@ class ChatConfig:
             ai_reply=data.get("ai_reply", True),
             setu_enabled=data.get("setu_enabled", True),
             convert_b23_enabled=data.get("convert_b23_enabled", False),
+            parse_artwork_enabled=data.get("parse_artwork_enabled", True),
         )
 
     def to_dict(self):

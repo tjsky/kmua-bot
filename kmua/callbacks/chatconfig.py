@@ -56,6 +56,12 @@ def _get_chat_config_reply_markup(chat_config: ChatConfig):
                 ),
             ],
             [
+                InlineKeyboardButton(
+                    f"解析插画链接 {"✔️" if chat_config.parse_artwork_enabled else "❌"}",
+                    callback_data="config_chat toggle parse_artwork_enabled",
+                ),
+            ],
+            [
                 InlineKeyboardButton("保存设置✅", callback_data="config_chat save"),
             ],
         ]
@@ -114,6 +120,10 @@ async def config_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 chat_config.setu_enabled = not chat_config.setu_enabled
             case "convert_b23_enabled":
                 chat_config.convert_b23_enabled = not chat_config.convert_b23_enabled
+            case "parse_artwork_enabled":
+                chat_config.parse_artwork_enabled = (
+                    not chat_config.parse_artwork_enabled
+                )
             case _:
                 await query.answer("未知操作, 不可以干坏事哦")
                 return
