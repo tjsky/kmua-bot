@@ -1,18 +1,23 @@
+import io
 import random
+import re
 
 import httpx
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.constants import ParseMode
+from PIL import Image
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
+from telegram.constants import ChatAction, ParseMode
 from telegram.error import TimedOut
 from telegram.ext import ContextTypes
 from telegram.helpers import escape_markdown
 
 from kmua import config, dao
+from kmua.common.utils import escape_html
 from kmua.config import settings
 from kmua.logger import logger
 
 _manyacg_api_url: str = settings.get("manyacg_api", "https://api.manyacg.top/v1")
 _manyacg_api_url = _manyacg_api_url.removesuffix("/") if _manyacg_api_url else None
+_manyacg_api_key = settings.get("manyacg_api_key")
 
 if _manyacg_api_url:
     httpx_client = httpx.AsyncClient(
@@ -149,3 +154,97 @@ async def _classify_setu(update: Update, _: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(text="失败惹，请稍后再试", quote=True)
 
 
+PIXIV_REGEX = re.compile(
+    r"pixiv\.net/(?:artworks/|i/|member_illust\.php\?(?:[\w=&]*\&|)illust_id=)(\d+)"
+)
+TWITTER_REGEX = re.compile(r"(?:twitter|x)\.com/([^/]+)/status/(\d+)")
+BILIBILI_REGEX = re.compile(r"t.bilibili.com/(\d+)|bilibili.com/opus/(\d+)")
+DANBOORU_REGEX = re.compile(r"danbooru\.donmai\.us/posts/\d+")
+KEMONO_REGEX = re.compile(r"kemono\.su/\w+/user/\d+/post/\d+")
+YANDERE_REGEX = re.compile(r"yande\.re/post/show/\d+")
+NHENTAI_REGEX = re.compile(r"nhentai\.net/g/\d+")
+ARTWORK_ALL_REGEX = [
+    PIXIV_REGEX,
+    TWITTER_REGEX,
+    BILIBILI_REGEX,
+    DANBOORU_REGEX,
+    KEMONO_REGEX,
+    YANDERE_REGEX,
+    NHENTAI_REGEX,
+]
+
+
+async def parse_artwork(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _manyacg_api_key:
+        return
+    text = update.effective_message.text
+    artwork_url = ""
+    for regex in ARTWORK_ALL_REGEX:
+        match = regex.search(text)
+        if match:
+            logger.info(f"parse_artwork: {match.group()}")
+            artwork_url = match.group()
+            break
+    if not artwork_url:
+        return
+    logger.debug(f"parse_artwork: {artwork_url}")
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_PHOTO
+    )
+    try:
+        resp = await httpx_client.get(
+            "/artwork/fetch",
+            params={"url": artwork_url},
+            headers={"X-API-KEY": _manyacg_api_key},
+            timeout=60,
+        )
+    except Exception as e:
+        logger.error(f"parse_artwork error: {e.__class__.__name__}:{e}")
+        return
+    if resp.status_code != 200:
+        return
+    artwork: dict = resp.json()
+    if artwork["status"] != 200:
+        return
+    artwork_title = artwork["data"]["title"]
+    artwork_description = artwork["data"]["description"]
+    artwork_source_url = artwork["data"]["source_url"]
+    artwork_r18 = artwork["data"]["r18"]
+    artwork_pictures = artwork["data"]["pictures"][:10]
+    artwork_pictures_count = len(artwork["data"]["pictures"])
+    try:
+        media = []
+        caption = f"<a href='{artwork_source_url}'>{escape_html(artwork_title)}</a>\n<blockquote expandable=true>{escape_html(artwork_description)}</blockquote>"
+        if artwork_pictures_count > 10:
+            caption += f"\n这个作品有{artwork_pictures_count}张图片哦"
+        async with httpx.AsyncClient() as client:
+            for picture in artwork_pictures:
+                pic_bytes: bytes = (await client.get(picture["original"])).content
+                if (
+                    len(pic_bytes) > 1024 * 1024 * 10
+                    or picture["width"] + picture["height"] > 10000
+                ):
+                    image = Image.open(io.BytesIO(pic_bytes))
+                    max_size = 2560
+                    ratio = max_size / max(image.width, image.height)
+                    if ratio < 1:
+                        new_size = (int(image.width * ratio), int(image.height * ratio))
+                        image = image.resize(new_size, Image.Resampling.LANCZOS)
+                    output = io.BytesIO()
+                    image.convert("RGB").save(output, format="JPEG", quality=90)
+                    pic_bytes = output.getvalue()
+                    output.close()
+                media.append(
+                    InputMediaPhoto(
+                        media=pic_bytes,
+                        has_spoiler=artwork_r18,
+                        caption=caption if picture["index"] == 0 else None,
+                        parse_mode=ParseMode.HTML,
+                    )
+                )
+        await update.effective_message.reply_media_group(
+            media=media,
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as e:
+        logger.error(f"parse_artwork error: {e.__class__.__name__}:{e}")

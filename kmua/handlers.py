@@ -206,6 +206,30 @@ bililink_convert_handler = MessageHandler(
     filters.Regex(r"b23.tv/[a-zA-Z0-9]+|bili2233.cn/[a-zA-Z0-9]+"),
     bilibili.bililink_convert,
 )
+
+
+parse_artwork_handler = MessageHandler(
+    # PIXIV_REGEX = re.compile(
+    #     r"pixiv\.net/(?:artworks/|i/|member_illust\.php\?(?:[\w=&]*\&|)illust_id=)(\d+)"
+    # )
+    # TWITTER_REGEX = re.compile(r"(?:twitter|x)\.com/([^/]+)/status/(\d+)")
+    # BILIBILI_REGEX = re.compile(r"t.bilibili.com/(\d+)|bilibili.com/opus/(\d+)")
+    # DANBOORU_REGEX = re.compile(r"danbooru\.donmai\.us/posts/\d+")
+    # KEMONO_REGEX = re.compile(r"kemono\.su/\w+/user/\d+/post/\d+")
+    # YANDERE_REGEX = re.compile(r"yande\.re/post/show/\d+")
+    # NHENTAI_REGEX = re.compile(r"nhentai\.net/g/\d+")
+    filters.Regex(
+        r"pixiv\.net/(?:artworks/|i/|member_illust\.php\?(?:[\w=&]*\&|)illust_id=)(\d+)|"
+        r"(?:twitter|x)\.com/([^/]+)/status/(\d+)|"
+        r"t.bilibili.com/(\d+)|bilibili.com/opus/(\d+)|"
+        r"danbooru\.donmai\.us/posts/\d+|"
+        r"kemono\.su/\w+/user/\d+/post/\d+|"
+        r"yande\.re/post/show/\d+|"
+        r"nhentai\.net/g/\d+"
+    ),
+    manyacg.parse_artwork,
+)
+
 random_quote_handler = MessageHandler(
     (~filters.COMMAND & filters.ChatType.GROUPS), quote.random_quote
 )
@@ -320,6 +344,7 @@ chatdata_handlers = [
 message_handlers = [
     edited_handler,
     bililink_convert_handler,
+    parse_artwork_handler,
     reply_handler,
     slash_handler,
     sticker2img_handler,
