@@ -158,7 +158,7 @@ PIXIV_REGEX = re.compile(
     r"pixiv\.net/(?:artworks/|i/|member_illust\.php\?(?:[\w=&]*\&|)illust_id=)(\d+)"
 )
 TWITTER_REGEX = re.compile(r"(?:twitter|x)\.com/([^/]+)/status/(\d+)")
-BILIBILI_REGEX = re.compile(r"t.bilibili.com/(\d+)|bilibili.com/opus/(\d+)")
+BILIBILI_REGEX = re.compile(r"t\.bilibili\.com/(\d+)|bilibili\.com/opus/(\d+)")
 DANBOORU_REGEX = re.compile(r"danbooru\.donmai\.us/posts/\d+")
 KEMONO_REGEX = re.compile(r"kemono\.su/\w+/user/\d+/post/\d+")
 YANDERE_REGEX = re.compile(r"yande\.re/post/show/\d+")
