@@ -182,12 +182,11 @@ async def parse_artwork(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for regex in ARTWORK_ALL_REGEX:
         match = regex.search(text)
         if match:
-            logger.info(f"parse_artwork: {match.group()}")
             artwork_url = match.group()
             break
     if not artwork_url:
         return
-    logger.debug(f"parse_artwork: {artwork_url}")
+    logger.info(f"parse_artwork: {artwork_url}")
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_PHOTO
     )
