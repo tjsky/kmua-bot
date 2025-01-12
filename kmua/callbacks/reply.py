@@ -12,8 +12,8 @@ from telegram.ext import ContextTypes
 
 from kmua import common, dao
 from kmua.callbacks.ip import ipinfo
+from kmua.callbacks.manyacg import setu
 from kmua.callbacks.remake import remake
-from kmua.callbacks.setu import setu
 from kmua.callbacks.waifu import today_waifu
 from kmua.config import settings
 from kmua.logger import logger

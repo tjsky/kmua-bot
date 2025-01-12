@@ -24,12 +24,12 @@ from .callbacks import (
     image,
     ip,
     manage,
+    manyacg,
     pin,
     quote,
     remake,
     reply,
     search,
-    setu,
     slash,
     start,
     sticker,
@@ -108,7 +108,7 @@ clear_inactive_user_avatar_handler = CommandHandler(
     manage.clear_inactive_user_avatar,
     filters=filters.ChatType.PRIVATE,
 )
-setu_handler = CommandHandler("setu", setu.setu)
+setu_handler = CommandHandler("setu", manyacg.setu)
 switch_waifu_handler = CommandHandler(
     "switch_waifu", waifu.switch_waifu, filters=filters.ChatType.GROUPS
 )
@@ -203,7 +203,7 @@ config_chat_callback_handler = CallbackQueryHandler(
 # MessageHandlers
 slash_handler = MessageHandler(kmua_filters.slash_filter, slash.slash)
 bililink_convert_handler = MessageHandler(
-    filters.Regex(r"b23.tv/[a-zA-Z0-9]+|bilibili.com/video/[a-zA-Z0-9]+"),
+    filters.Regex(r"b23.tv/[a-zA-Z0-9]+|bili2233.cn/[a-zA-Z0-9]+"),
     bilibili.bililink_convert,
 )
 random_quote_handler = MessageHandler(

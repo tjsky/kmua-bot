@@ -147,3 +147,5 @@ async def _classify_setu(update: Update, _: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"nsfwjs error: {e.__class__.__name__}:{e}")
         await update.effective_message.reply_text(text="失败惹，请稍后再试", quote=True)
+
+
