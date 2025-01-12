@@ -16,10 +16,10 @@ async def bililink_convert(update: Update, context: ContextTypes):
     is_group = chat.type in (chat.GROUP, chat.SUPERGROUP)
     if is_group and not dao.get_chat_config(chat).convert_b23_enabled:
         return
-    # 匹配 b23.tv/ 后面的字符
-    b23code = re.search(r"(?<=b23\.tv\/)[a-zA-Z0-9]+", text)
+    # 匹配 b23.tv 或 bili2233.cn 后面的字符
+    b23code = re.search(r"(?:b23\.tv|bili2233\.cn)/([a-zA-Z0-9]+)", text)
     if b23code:
-        await _b23_convert(update, context, b23code.group(), is_group)
+        await _b23_convert(update, context, b23code.group().split("/")[-1], is_group)
         if is_group:
             try:
                 await message.delete()
