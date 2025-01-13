@@ -74,9 +74,10 @@ Redis 可能是其他扩展功能的依赖
 
 - `KMUA_REDIS_URL` - Redis 连接地址
 
-##### ManyACG (随机涩图)
+##### ManyACG (随机涩图/解析插画)
 
 - `KMUA_MANYACG_API` - ManyACG API 地址
+- `KMUA_MANYACG_API_KEY` - ManyACG API Key, 配置后可解析插画链接
 
 ##### NSFW 图像分类
 
