@@ -24,7 +24,8 @@ _help_text = """
 /setu - 来点色图 (/ω＼*)
 /search - 搜索群消息
 /import_history - 导入历史消息
-/index_stats - 查看索引统计
+/index_stats - 查看本群消息索引统计
+/update_index - 立即更新本群消息索引
 /set_greet - 设置群组欢迎语
 /id - 获取聊天ID
 /ip - 查询IP/域名信息
