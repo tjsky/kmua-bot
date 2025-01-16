@@ -385,18 +385,18 @@ async def index_stats(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 async def update_index_job(context: ContextTypes.DEFAULT_TYPE):
     if context.chat_data.get("updating_index"):
-        logger.debug(f"index is updating for {context.job.chat_id}, skip")
+        logger.trace(f"index is updating for {context.job.chat_id}, skip")
     msg_cache = common.redis_client.lrange(f"kmua_chatmsg_{context.job.chat_id}", 0, -1)
     if not msg_cache:
-        logger.debug(f"no message to update for {context.job.chat_id}")
+        logger.trace(f"no message to update for {context.job.chat_id}")
         return
-    logger.debug(f"updating index for {context.job.chat_id}")
+    logger.trace(f"updating index for {context.job.chat_id}")
     context.chat_data["updating_index"] = True
     try:
         messages: list[common.MessageInMeili] = [
             pickle.loads(msg).to_dict() for msg in msg_cache
         ]
-        logger.debug(f"load {len(messages)} messages for {context.job.chat_id}")
+        logger.trace(f"load {len(messages)} messages for {context.job.chat_id}")
         common.meili_client.index(f"kmua_{context.job.chat_id}").add_documents(
             documents=messages,
             primary_key="message_id",
@@ -408,7 +408,7 @@ async def update_index_job(context: ContextTypes.DEFAULT_TYPE):
         return
     finally:
         context.chat_data["updating_index"] = False
-    logger.info(f"Index updated for {context.job.chat_id}")
+    logger.trace(f"Index updated for {context.job.chat_id}")
 
 
 def _get_message_meili(
