@@ -91,7 +91,8 @@ Redis 可能是其他扩展功能的依赖
 - `KMUA_MEILISEARCH_API` - Meilisearch 地址
 - `KMUA_MEILISEARCH_KEY` - Meilisearch API Key
 - `KMUA_MEILISEARCH_NEW_INDEX` - 是否允许创建新的索引, 默认 `true`
-- `KMUA_MEILISEARCH_UPDATE_INTERVAL` - 更新索引间隔, 默认 300s
+- `KMUA_MEILISEARCH_UPDATE_INTERVAL` - 更新索引间隔, 默认 300 , 单位秒
+- `KMUA_MEILISEARCH_MAX_IMPORT_FILE_SIZE` - 最大导入历史记录文件大小, 默认 20, 单位 MB
 
 ##### 图像超分辨率
 

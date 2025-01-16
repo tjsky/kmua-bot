@@ -272,7 +272,10 @@ async def import_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ):
         await message.reply_text("请回复一个导出的json历史记录文件")
         return
-    if target_message.document.file_size > 20 * 1024 * 1024:
+    if (
+        target_message.document.file_size
+        > config.settings.get("meilisearch_max_import_file_size", 20) * 1024 * 1024
+    ):
         await message.reply_text("太大了, 不行!")
         return
 
