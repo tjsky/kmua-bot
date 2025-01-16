@@ -33,6 +33,7 @@ async def manage(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /clear_inactive_user_avatar <days> - 清理不活跃用户的头像缓存
 /error_notice - 开启/关闭错误通知
 /update_index - 更新所有消息索引
+/clear_all_contents - 清空所有对话内容
 """
     await chat.send_message(text, reply_markup=_manage_markup)
 
