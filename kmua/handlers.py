@@ -86,8 +86,10 @@ getid_handler = CommandHandler("id", chatinfo.getid)
 set_title_permissions_handler = CommandHandler(
     "sett", title.set_title_permissions, filters=filters.ChatType.GROUPS
 )
-chat_data_manage_handler = CommandHandler(
-    "manage", chatdata.chat_data_manage, filters=filters.ChatType.GROUPS
+chat_data_info_handler = CommandHandler(
+    "info",
+    chatdata.chat_data_info,
+    filters=filters.ChatType.GROUPS & kmua_filters.mention_bot_filter,
 )
 bot_manage_handler = CommandHandler(
     "manage", manage.manage, filters=filters.ChatType.PRIVATE
@@ -209,15 +211,6 @@ bililink_convert_handler = MessageHandler(
 
 
 parse_artwork_handler = MessageHandler(
-    # PIXIV_REGEX = re.compile(
-    #     r"pixiv\.net/(?:artworks/|i/|member_illust\.php\?(?:[\w=&]*\&|)illust_id=)(\d+)"
-    # )
-    # TWITTER_REGEX = re.compile(r"(?:twitter|x)\.com/([^/]+)/status/(\d+)")
-    # BILIBILI_REGEX = re.compile(r"t.bilibili.com/(\d+)|bilibili.com/opus/(\d+)")
-    # DANBOORU_REGEX = re.compile(r"danbooru\.donmai\.us/posts/\d+")
-    # KEMONO_REGEX = re.compile(r"kemono\.su/\w+/user/\d+/post/\d+")
-    # YANDERE_REGEX = re.compile(r"yande\.re/post/show/\d+")
-    # NHENTAI_REGEX = re.compile(r"nhentai\.net/g/\d+")
     filters.Regex(
         r"pixiv\.net/(?:artworks/|i/|member_illust\.php\?(?:[\w=&]*\&|)illust_id=)(\d+)|"
         r"(?:twitter|x)\.com/([^/]+)/status/(\d+)|"
@@ -274,7 +267,7 @@ command_handlers = [
     today_waifu_handler,
     waifu_graph_handler,
     quote_handler,
-    chat_data_manage_handler,
+    chat_data_info_handler,
     title_handler,
     set_quote_probability_handler,
     qrand_handler,
