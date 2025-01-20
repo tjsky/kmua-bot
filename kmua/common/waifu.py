@@ -45,22 +45,24 @@ def get_user_waifu_info(user: User | UserData) -> str:
 已婚老婆id: {db_user.married_waifu_id}
 """
     waifus_with_chat = dao.get_user_waifus_with_chat(user)
+    waifus_with_chat_list = list(waifus_with_chat)
     if not waifus_with_chat:
         text += "\n你今天还没有老婆哦"
     else:
-        if len(waifus_with_chat) > 233:
-            waifus_with_chat = waifus_with_chat[:233]
+        if len(waifus_with_chat_list) > 233:
+            waifus_with_chat_list = waifus_with_chat_list[:233]
         text += "\n你今天的老婆们(最多显示233条):\n"
-        for waifu, chat in waifus_with_chat:
+        for waifu, chat in waifus_with_chat_list:
             text += f"{waifu.full_name} ({chat.title})\n"
     waifus_of_with_chat = dao.get_user_waifus_of_with_chat(user)
+    waifus_of_with_chat_list = list(waifus_of_with_chat)
     if not waifus_of_with_chat:
         text += "\n今天还没有人把你当老婆哦"
     else:
-        if len(waifus_of_with_chat) > 233:
-            waifus_of_with_chat = waifus_of_with_chat[:233]
+        if len(waifus_of_with_chat_list) > 233:
+            waifus_of_with_chat_list = waifus_of_with_chat_list[:233]
         text += "\n你今天是以下人的老婆(最多显示233条):\n"
-        for waifu_of, chat in waifus_of_with_chat:
+        for waifu_of, chat in waifus_of_with_chat_list:
             text += f"{waifu_of.full_name} ({chat.title})\n"
     return text
 
