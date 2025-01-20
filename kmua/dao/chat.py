@@ -1,4 +1,5 @@
 import json
+import random
 from typing import Any, Generator
 
 import sqlalchemy
@@ -82,11 +83,12 @@ def update_chat_quote_probability(chat: Chat | ChatData, probability: float):
 
 
 def get_chat_random_quote(chat: Chat | ChatData) -> Quote | None:
+    count = _db.query(Quote).filter(Quote.chat_id == chat.id).count()
+    if count == 0:
+        return None
+    random_offset = random.randint(0, count - 1)
     return (
-        _db.query(Quote)
-        .filter(Quote.chat_id == chat.id)
-        .order_by(func.random())
-        .first()
+        _db.query(Quote).filter(Quote.chat_id == chat.id).offset(random_offset).first()
     )
 
 
