@@ -52,7 +52,9 @@ async def send_waifu_graph(
     logger.debug(f"Generating waifu graph for {chat.title}<{chat.id}>")
     try:
         relationships = common.get_chat_waifu_relationships(chat)
-        participate_users = dao.get_chat_user_participated_waifu(chat)
+        participate_users, participate_user_count = (
+            dao.get_chat_user_participated_waifu_data(chat)
+        )
         if not participate_users or not relationships:
             if msg_id:
                 await context.bot.send_message(
@@ -73,12 +75,12 @@ async def send_waifu_graph(
             for user in participate_users
         )
         image_bytes = common.render_waifu_graph(
-            relationships, user_info, len(participate_users)
+            relationships, user_info, participate_user_count
         )
         sent_message = await context.bot.send_document(
             chat.id,
             document=image_bytes,
-            caption=f"老婆关系图:\n {len(participate_users)} users",
+            caption=f"老婆关系图:\n {participate_user_count} users",
             filename="waifu_graph.webp",
             disable_content_type_detection=True,
             reply_to_message_id=msg_id,

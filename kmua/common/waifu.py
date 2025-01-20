@@ -19,7 +19,7 @@ def get_chat_waifu_relationships(
     chat: Chat | ChatData,
 ) -> Generator[tuple[int, int], None, None]:
     logger.debug(f"Get chat waifu relationships for {chat.title}<{chat.id}>")
-    members = dao.get_chat_user_participated_waifu(chat)
+    members, _ = dao.get_chat_user_participated_waifu_data(chat)
     for member in members:
         waifu = dao.get_user_waifu_in_chat_exclude_married(member, chat)
         if waifu:

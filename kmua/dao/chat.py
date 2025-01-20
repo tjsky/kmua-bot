@@ -60,9 +60,9 @@ def get_chat_members(chat: Chat | ChatData) -> list[UserData]:
     return _db_chat.members
 
 
-def get_chat_members_id(chat: Chat | ChatData) -> list[int]:
+def get_chat_members_id(chat: Chat | ChatData) -> Generator[int, None, None]:
     members = get_chat_members(chat)
-    return [member.id for member in members]
+    return (member.id for member in members)
 
 
 def get_chat_quote_probability(chat: Chat | ChatData) -> float:
@@ -115,16 +115,16 @@ def get_chat_users_without_bots(
     return (user for user in _db_chat.members if not user.is_bot)
 
 
-def get_chat_users_without_bots_id(chat: Chat | ChatData) -> list[int]:
-    return [user.id for user in get_chat_users_without_bots(chat)]
+def get_chat_users_without_bots_id(chat: Chat | ChatData) -> Generator[int, None, None]:
+    return (user.id for user in get_chat_users_without_bots(chat))
 
 
 def get_all_chats() -> list[ChatData]:
     return _db.query(ChatData).all()
 
 
-def get_all_chats_id() -> list[int]:
-    return [chat.id for chat in get_all_chats()]
+def get_all_chats_id() -> Generator[int, None, None]:
+    return (chat.id for chat in get_all_chats())
 
 
 def delete_chat(chat: Chat | ChatData):
