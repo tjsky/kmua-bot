@@ -7,7 +7,6 @@ from kmua import common, dao
 from kmua.config import settings
 from kmua.logger import logger
 
-from .chatdata import chat_data_manage
 from .jobs import clean_data
 
 _manage_markup = InlineKeyboardMarkup(
@@ -18,7 +17,6 @@ _manage_markup = InlineKeyboardMarkup(
 async def manage(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if chat.type in (chat.GROUP, chat.SUPERGROUP):
-        await chat_data_manage(update, context)
         return
     if not common.verify_user_can_manage_bot(update.effective_user):
         return
