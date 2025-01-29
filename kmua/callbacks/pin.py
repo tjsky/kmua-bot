@@ -10,10 +10,7 @@ async def unpin_channel_pin(update: Update, _: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
     message = update.effective_message
-    logger.info(
-        f"[{chat.title}({chat.id})({chat.username})]<{user.name}>"
-        + (f" {message.text}" if message.text else "<非文本消息>")
-    )
+    logger.info(f"[{chat.title}({chat.id})({chat.username})]<{user.name}>")
     if not dao.get_chat_unpin_channel_pin_enabled(chat):
         return
 
