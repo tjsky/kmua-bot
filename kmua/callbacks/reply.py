@@ -118,9 +118,6 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"kmua_contents_{update.effective_user.id}", contents, ex=2 * 24 * 60 * 60
         )
     contents: list[ChatCompletionMessageParam] = pickle.loads(contents)
-    if len(contents) <= 2:
-        await _keyword_reply(update, context, message_text)
-        return
     try:
         if context.bot_data.get("openai_answering", False):
             await _keyword_reply_without_save(update, context, message_text)
