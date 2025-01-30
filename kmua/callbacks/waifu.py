@@ -51,11 +51,10 @@ async def send_waifu_graph(
 ):
     logger.debug(f"Generating waifu graph for {chat.title}<{chat.id}>")
     try:
-        relationships = common.get_chat_waifu_relationships(chat)
         participate_users, participate_user_count = (
             dao.get_chat_user_participated_waifu_data(chat)
         )
-        if not participate_users or not relationships:
+        if participate_user_count < 2 or not participate_users:
             if msg_id:
                 await context.bot.send_message(
                     chat.id,
@@ -63,6 +62,7 @@ async def send_waifu_graph(
                     reply_to_message_id=msg_id,
                 )
             return
+        relationships = common.get_chat_waifu_relationships(chat)
 
         with open(common.DEFAULT_SMALL_AVATAR_PATH, "rb") as f:
             default_avatar = f.read()
@@ -74,7 +74,7 @@ async def send_waifu_graph(
             }
             for user in participate_users
         )
-        image_bytes = common.render_waifu_graph(
+        image_bytes = await common.render_waifu_graph(
             relationships, user_info, participate_user_count
         )
         sent_message = await context.bot.send_document(

@@ -122,7 +122,7 @@ def get_waifu_text(
     )
 
 
-def render_waifu_graph(
+async def render_waifu_graph(
     relationships: Generator[tuple[int, int], None, None],
     user_info: Generator[dict[str, Any], None, None],
     length: int = 0,
