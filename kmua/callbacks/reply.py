@@ -119,10 +119,10 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     contents: list[ChatCompletionMessageParam] = pickle.loads(contents)
     try:
-        if context.bot_data.get("openai_answering", False):
+        if context.user_data.get("openai_answering", False):
             await _keyword_reply_without_save(update, context, message_text)
             return
-        context.bot_data["openai_answering"] = True
+        context.user_data["openai_answering"] = True
         contents.append(
             {
                 "role": "user",
@@ -175,7 +175,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pickle.dumps(contents),
                 ex=2 * 24 * 60 * 60,
             )
-        context.bot_data["openai_answering"] = False
+        context.user_data["openai_answering"] = False
 
 
 async def _keyword_reply(
