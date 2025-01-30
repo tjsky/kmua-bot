@@ -102,9 +102,9 @@ def get_waifu_text(
             )
             if waifu.waifu_mention
             else (
-                rf"你今天已经抽过老婆了\! {escape_markdown(waifu.full_name,2)} 是你今天的老婆\!"
+                rf"你今天已经抽过老婆了\! {escape_markdown(waifu.full_name, 2)} 是你今天的老婆\!"
                 if is_got_waifu
-                else rf"你今天的群幼老婆是 {escape_markdown(waifu.full_name,2)} \!"
+                else rf"你今天的群幼老婆是 {escape_markdown(waifu.full_name, 2)} \!"
             )
         )
     return (
@@ -115,9 +115,9 @@ def get_waifu_text(
         )
         if waifu.waifu_mention
         else (
-            rf"{mention_markdown_v2(user)}, 你今天已经抽过老婆了\! {escape_markdown(waifu.full_name,2)} 是你今天的老婆\!"
+            rf"{mention_markdown_v2(user)}, 你今天已经抽过老婆了\! {escape_markdown(waifu.full_name, 2)} 是你今天的老婆\!"
             if is_got_waifu
-            else rf"{mention_markdown_v2(user)}, 你今天的群幼老婆是 {escape_markdown(waifu.full_name,2)} \!"
+            else rf"{mention_markdown_v2(user)}, 你今天的群幼老婆是 {escape_markdown(waifu.full_name, 2)} \!"
         )
     )
 

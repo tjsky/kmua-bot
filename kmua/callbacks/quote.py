@@ -327,10 +327,11 @@ async def _chat_quote_manage(update: Update, _: ContextTypes.DEFAULT_TYPE):
             escape_markdown(quote.text[:150], 2)
             if quote.text
             else r"A non\-text message sent by "
-            f"{escape_markdown(quote.user.full_name,2)}"
+            f"{escape_markdown(quote.user.full_name, 2)}"
         )
         text += (
-            rf"{index+1}\. " f"[{quote_content}]({escape_markdown(quote.link,2)})\n\n"
+            rf"{index + 1}\. "
+            f"[{quote_content}]({escape_markdown(quote.link, 2)})\n\n"
         )
         line.append(
             InlineKeyboardButton(

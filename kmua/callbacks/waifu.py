@@ -247,8 +247,8 @@ async def _remove_waifu_confirm(update: Update, context: ContextTypes.DEFAULT_TY
     dao.delete_association_in_chat(message.chat, waifu)
     dao.refresh_user_waifu_in_chat(user, message.chat)
     text = (
-        f"_已移除该用户:_ {escape_markdown(waifu.full_name,2)}\n"
-        + f"ta 曾是 {escape_markdown(user.full_name,2)} 的老婆"
+        f"_已移除该用户:_ {escape_markdown(waifu.full_name, 2)}\n"
+        + f"ta 曾是 {escape_markdown(user.full_name, 2)} 的老婆"
     )
     if message.photo:
         await message.edit_caption(

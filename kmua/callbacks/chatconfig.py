@@ -17,47 +17,47 @@ def _get_chat_config_reply_markup(chat_config: ChatConfig):
         [
             [
                 InlineKeyboardButton(
-                    f"每日老婆 {"✔️" if chat_config.waifu_enabled else "❌"}",
+                    f"每日老婆 {'✔️' if chat_config.waifu_enabled else '❌'}",
                     callback_data="config_chat toggle waifu_enabled",
                 ),
                 InlineKeyboardButton(
-                    f"删除事件消息 {"✔️" if chat_config.delete_events_enabled else "❌"}",
+                    f"删除事件消息 {'✔️' if chat_config.delete_events_enabled else '❌'}",
                     callback_data="config_chat toggle delete_events_enabled",
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    f"消息搜索 {"✔️" if chat_config.message_search_enabled else "❌"}",
+                    f"消息搜索 {'✔️' if chat_config.message_search_enabled else '❌'}",
                     callback_data="config_chat toggle message_search_enabled",
                 ),
                 InlineKeyboardButton(
-                    f"语录置顶 {"✔️" if chat_config.quote_pin_message else "❌"}",
+                    f"语录置顶 {'✔️' if chat_config.quote_pin_message else '❌'}",
                     callback_data="config_chat toggle quote_pin_message",
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    f"AI回复 {"✔️" if chat_config.ai_reply else "❌"}",
+                    f"AI回复 {'✔️' if chat_config.ai_reply else '❌'}",
                     callback_data="config_chat toggle ai_reply",
                 ),
                 InlineKeyboardButton(
-                    f"随机涩图 {"✔️" if chat_config.setu_enabled else "❌"}",
+                    f"随机涩图 {'✔️' if chat_config.setu_enabled else '❌'}",
                     callback_data="config_chat toggle setu_enabled",
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    f"解除频道置顶 {"✔️" if chat_config.unpin_channel_pin_enabled else "❌"}",
+                    f"解除频道置顶 {'✔️' if chat_config.unpin_channel_pin_enabled else '❌'}",
                     callback_data="config_chat toggle unpin_channel_pin_enabled",
                 ),
                 InlineKeyboardButton(
-                    f"转换b23短链 {"✔️" if chat_config.convert_b23_enabled else "❌"}",
+                    f"转换b23短链 {'✔️' if chat_config.convert_b23_enabled else '❌'}",
                     callback_data="config_chat toggle convert_b23_enabled",
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    f"解析插画链接 {"✔️" if chat_config.parse_artwork_enabled else "❌"}",
+                    f"解析插画链接 {'✔️' if chat_config.parse_artwork_enabled else '❌'}",
                     callback_data="config_chat toggle parse_artwork_enabled",
                 ),
             ],

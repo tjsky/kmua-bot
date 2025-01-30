@@ -77,7 +77,7 @@ async def setu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         detail_link = f"https://t.me/{_MANYACG_CHANNEL}/{picture['message_id']}"
         sent_message = await update.effective_message.reply_photo(
             photo=picture["regular"],
-            caption=f"这是你要的涩图\n[{escape_markdown(artwork['title'],2)}]({artwork['source_url']})\n",
+            caption=f"这是你要的涩图\n[{escape_markdown(artwork['title'], 2)}]({artwork['source_url']})\n",
             reply_markup=InlineKeyboardMarkup(
                 [
                     [
@@ -136,7 +136,7 @@ async def _classify_setu(update: Update, _: ContextTypes.DEFAULT_TYPE):
             match nsfw_class:
                 case "Drawing":
                     text = f"这是1张普通的插画! (大概有 {result[nsfw_class]}% 的可能性吧..."
-                    text += f"涩情度: {result["Hentai"]}%)"
+                    text += f"涩情度: {result['Hentai']}%)"
                 case "Hentai":
                     text = f"Hentai...你满脑子都是涩涩的事情嘛? 涩情度: {result[nsfw_class]}%"
                 case "Neutral":

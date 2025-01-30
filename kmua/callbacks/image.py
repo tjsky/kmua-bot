@@ -135,7 +135,7 @@ async def super_resolute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     task_id = response.json().get("task_id")
     await sent_message.edit_text(
-        f"{escape_markdown("超分任务已经提交, ID: ",2)}`{escape_markdown(task_id,2)}`\n请过段时间来取结果哦",
+        f"{escape_markdown('超分任务已经提交, ID: ', 2)}`{escape_markdown(task_id, 2)}`\n请过段时间来取结果哦",
         parse_mode="MarkdownV2",
     )
     context.job_queue.run_repeating(

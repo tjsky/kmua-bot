@@ -321,7 +321,8 @@ async def _user_quote_manage(update: Update, _: ContextTypes.DEFAULT_TYPE):
             else r"A non\-text message"
         )
         text += (
-            rf"{index + 1}\. " f"[{quote_content}]({escape_markdown(quote.link,2)})\n\n"
+            rf"{index + 1}\. "
+            f"[{quote_content}]({escape_markdown(quote.link, 2)})\n\n"
         )
 
         line.append(
@@ -367,7 +368,8 @@ async def _qer_quote_manage(update: Update, _: ContextTypes.DEFAULT_TYPE):
             else r"A non\-text message"
         )
         text += (
-            rf"{index + 1}\. " f"[{quote_content}]({escape_markdown(quote.link,2)})\n\n"
+            rf"{index + 1}\. "
+            f"[{quote_content}]({escape_markdown(quote.link, 2)})\n\n"
         )
     keyboard = []
     keyboard.append(common.get_qer_quote_navigation_buttons(page))

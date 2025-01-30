@@ -3,7 +3,6 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-import pytz
 import uvloop
 from telegram.constants import UpdateType
 from telegram.ext import (
@@ -87,7 +86,7 @@ def run_bot():
     """
     uvloop.install()
     token = settings.token
-    defaults = Defaults(tzinfo=pytz.timezone("Asia/Shanghai"))
+    defaults = Defaults(tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
     rate_limiter = AIORateLimiter()
     persistence_input = PersistenceInput(
         bot_data=True, chat_data=True, user_data=False, callback_data=False
@@ -113,7 +112,13 @@ def run_bot():
     job_queue = app.job_queue
     job_queue.run_daily(
         clean_data,
-        time=datetime.time(4, 0, 0, 0, tzinfo=pytz.timezone("Asia/Shanghai")),
+        time=datetime.time(
+            4,
+            0,
+            0,
+            0,
+            datetime.timezone(datetime.timedelta(hours=8)),
+        ),
         name="clean_data",
     )
     app.add_handlers(

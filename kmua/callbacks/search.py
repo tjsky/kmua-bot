@@ -112,7 +112,7 @@ async def search_message_page(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 [
                     InlineKeyboardButton(
                         "下一页",
-                        callback_data=f"message_search {query_uuid} {offset+10}",
+                        callback_data=f"message_search {query_uuid} {offset + 10}",
                     ),
                 ]
             ]
@@ -123,15 +123,15 @@ async def search_message_page(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 [
                     InlineKeyboardButton(
                         "上一页",
-                        callback_data=f"message_search {query_uuid} {offset-10}",
+                        callback_data=f"message_search {query_uuid} {offset - 10}",
                     ),
                     InlineKeyboardButton(
-                        f"第 {offset//10+1} 页",
+                        f"第 {offset // 10 + 1} 页",
                         callback_data="noop",
                     ),
                     InlineKeyboardButton(
                         "下一页",
-                        callback_data=f"message_search {query_uuid} {offset+10}",
+                        callback_data=f"message_search {query_uuid} {offset + 10}",
                     ),
                 ]
             ]
@@ -458,7 +458,7 @@ def _get_message_meili(
                         full_text += f" {file_name}"
         if msg_export.get("photo"):
             message_type = common.MessageType.PHOTO
-        full_text += f" {msg_export.get("title", "")}"
+        full_text += f" {msg_export.get('title', '')}"
         yield common.MessageInMeili(
             message_id=message_id,
             user_id=from_id,
@@ -486,7 +486,7 @@ def _get_hit_text(hits: list[dict], chat_id: str) -> Generator[str, None, None]:
         emoji = _get_message_type_emoji(hit["type"])
         message_link = f"https://t.me/c/{chat_id}/{hit['message_id']}"
         formatted_text = hit["_formatted"]["text"].replace("\n", " ")
-        formatted_text = f"{escape_markdown(emoji,2)} [{escape_markdown(formatted_text,2)}]({message_link})\n\n"
+        formatted_text = f"{escape_markdown(emoji, 2)} [{escape_markdown(formatted_text, 2)}]({message_link})\n\n"
         user_id: int = hit["user_id"]
         if db_user := dao.get_user_by_id(user_id):
             user_text = escape_markdown(f"[{db_user.full_name}]:\n", 2)

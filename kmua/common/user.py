@@ -180,10 +180,10 @@ def mention_markdown_v2(user: User | UserData | Chat | ChatData) -> str:
     if isinstance(user, (UserData, ChatData)):
         db_user = dao.add_user(user)
         if not db_user.is_real_user and db_user.username is not None:
-            return f"[{escape_markdown(db_user.full_name,2)}](https://t.me/{db_user.username})"
-        return f"[{escape_markdown(db_user.full_name,2)}](tg://user?id={db_user.id})"
+            return f"[{escape_markdown(db_user.full_name, 2)}](https://t.me/{db_user.username})"
+        return f"[{escape_markdown(db_user.full_name, 2)}](tg://user?id={db_user.id})"
     else:
         try:
             return user.mention_markdown_v2()
         except TypeError:
-            return f"[{escape_markdown(user.title,2)}](tg://user?id={user.id})"
+            return f"[{escape_markdown(user.title, 2)}](tg://user?id={user.id})"
