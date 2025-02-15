@@ -12,7 +12,7 @@ from telegram import (
     Update,
     User,
 )
-from telegram.constants import ChatAction, ChatType
+from telegram.constants import ChatAction, ChatType, ParseMode
 from telegram.ext import ContextTypes
 from telegram.helpers import escape_markdown
 
@@ -63,9 +63,12 @@ async def quote(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=chat.id,
         )
         return
-    text = ["好!", "让我康康是谁在说怪话!", "名入册焉"]
+    text = ["好\\!", "让我康康是谁在说怪话\\!", "名入册焉"]
+    choice_text = random.choice(text)
+    if not quote_message.text or len(quote_message.text) > 200:
+        choice_text += "\n_非文本消息或文本过长不能生成图片哦_"
     tasks = [
-        quote_message.reply_text(text=random.choice(text)),
+        quote_message.reply_text(text=choice_text, parse_mode=ParseMode.MARKDOWN_V2),
         _generate_and_send_quote_img(update, context, quote_message, quote_user),
     ]
     chat_config = dao.get_chat_config(chat)
