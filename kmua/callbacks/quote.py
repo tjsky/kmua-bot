@@ -66,7 +66,7 @@ async def quote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = ["好\\!", "让我康康是谁在说怪话\\!", "名入册焉\\!", "好，我记住你了\\!"]
     choice_text = random.choice(text)
     if not quote_message.text or len(quote_message.text) > 200:
-        choice_text += "\n_请不要插入奇怪或长长的东西啦>﹏<_\n¯¯非文本消息或文本过长是无法生成图片哦¯¯"
+        choice_text += "\n_请不要插入奇怪或长长的东西啦\\>﹏\\<_\n¯¯非文本消息或文本过长是无法生成图片哦¯¯"
     tasks = [
         quote_message.reply_text(text=choice_text, parse_mode=ParseMode.MARKDOWN_V2),
         _generate_and_send_quote_img(update, context, quote_message, quote_user),
