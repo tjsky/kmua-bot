@@ -26,6 +26,7 @@ dependencies = [
     "emoji==2.11",
     "mysql-connector-python>=9.1.0",
     "openai>=1.52.2",
+    "cryptography>=44.0.1",
 ]
 
 [tool.uv]
