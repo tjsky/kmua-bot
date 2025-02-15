@@ -36,15 +36,15 @@ async def quote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args and context.args[0] != "nopin":
         return
     if not message.reply_to_message:
-        await message.reply_text("请回复一条消息")
+        await message.reply_text("请回复一条消息￣□￣")
         return
     if message.is_topic_message:
-        await message.reply_text("暂不支持在主话题外使用此功能")
+        await message.reply_text("暂不支持在主话题外使用此功能呢")
         return
     quote_message = message.reply_to_message
     quote_user = common.get_message_origin(quote_message)
     if not quote_user:
-        await message.reply_text("不知道这条消息是谁发的呢...")
+        await message.reply_text("喵不知道这条消息是谁发的呢...")
         return
     qer_user = message.sender_chat or user
     dao.add_user(quote_user)
@@ -63,10 +63,10 @@ async def quote(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=chat.id,
         )
         return
-    text = ["好\\!", "让我康康是谁在说怪话\\!", "名入册焉"]
+    text = ["好\\!", "让我康康是谁在说怪话\\!", "名入册焉\\!", "好，我记住你了\\!"]
     choice_text = random.choice(text)
     if not quote_message.text or len(quote_message.text) > 200:
-        choice_text += "\n_非文本消息或文本过长不能生成图片哦_"
+        choice_text += "\n_请不要插入奇怪或长长的东西啦>﹏<_\n¯¯非文本消息或文本过长是无法生成图片哦¯¯"
     tasks = [
         quote_message.reply_text(text=choice_text, parse_mode=ParseMode.MARKDOWN_V2),
         _generate_and_send_quote_img(update, context, quote_message, quote_user),
