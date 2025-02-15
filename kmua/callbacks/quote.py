@@ -77,14 +77,13 @@ async def quote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     results = await asyncio.gather(*tasks)
     if not results[1]:
         logger.warning(f"Failed to generate quote image for {quote_message_link}")
-        return
     dao.add_quote(
         chat=chat,
         user=quote_user,
         qer=qer_user,
         message=quote_message,
         link=quote_message_link,
-        img=results[1],
+        img=results[1] if results[1] else None,
     )
 
 
