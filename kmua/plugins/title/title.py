@@ -23,7 +23,6 @@ async def set_member_title(client: PyrogramClient, message: pyrogram.types.Messa
         return
     reply_target = get_reply_target(message)
     target = reply_target.from_user if reply_target else user
-    
     if not target or not target.id or isinstance(target, pyrogram.types.Chat):
         await message.reply_text(
             i18n.t(
@@ -33,7 +32,6 @@ async def set_member_title(client: PyrogramClient, message: pyrogram.types.Messa
             parse_mode=pyrogram.enums.ParseMode.HTML,
         )
         return
-    
     if user.id != target.id:
         if not await common.can_user_manage_bot_in_chat(user, chat):
             chat_config = await database.get_chat_config(chat.id)
@@ -44,10 +42,10 @@ async def set_member_title(client: PyrogramClient, message: pyrogram.types.Messa
             return
     if not message.command:
         return
-        
     custom_title = " ".join(message.command[1:]).strip()
     if not custom_title:
         custom_title = target.username or target.full_name
+    
     chat_config = await database.get_chat_config(chat.id)
     permissions = chat_config.title_permissions or {}
     if isinstance(permissions, str):
@@ -65,7 +63,6 @@ async def set_member_title(client: PyrogramClient, message: pyrogram.types.Messa
                 user=(await mention_html(user)),
             )
         )
-        # check if the bot is an admin with can_promote_members before trying to promote the user, otherwise fallback to set_chat_member_tag if the bot doesn't have the permission
         me = await common.get_chat_member(client, chat.id, "me")
         if (
             me.status != pyrogram.enums.ChatMemberStatus.ADMINISTRATOR
@@ -196,11 +193,12 @@ async def set_title_permissions_callback(
 )
 async def delete_member_title(client: PyrogramClient, message: pyrogram.types.Message):
     chat = message.chat
-    user = message.from_user
+    user = message.from_user  
     if chat is None or chat.id is None or user is None:
         return
     reply_target = get_reply_target(message)
     target = reply_target.from_user if reply_target else user
+    
     lang = (await database.get_chat_config(chat)).lang
     if not target or not target.id or isinstance(target, pyrogram.types.Chat):
         await message.reply_text(
@@ -215,6 +213,7 @@ async def delete_member_title(client: PyrogramClient, message: pyrogram.types.Me
                 parse_mode=pyrogram.enums.ParseMode.HTML,
             )
             return
+
     try:
         me = await common.get_chat_member(client, chat.id, "me")
         if (not me.status == pyrogram.enums.ChatMemberStatus.ADMINISTRATOR) or (
@@ -226,17 +225,10 @@ async def delete_member_title(client: PyrogramClient, message: pyrogram.types.Me
                     parse_mode=pyrogram.enums.ParseMode.HTML,
                 )
                 return
-            await client.set_chat_member_tag(
-                chat.id,
-                target.id,
-                tag=None,
-            )
-            await message.reply_text(
-                i18n.t("bot.msg.title.deleted", locale=lang),
-                parse_mode=pyrogram.enums.ParseMode.HTML,
-            )
+            await client.set_chat_member_tag(chat.id, target.id, tag=None)
+            await message.reply_text(i18n.t("bot.msg.title.deleted", locale=lang), parse_mode=pyrogram.enums.ParseMode.HTML)
             return
-            
+
         await client.promote_chat_member(
             chat_id=chat.id,
             user_id=target.id,
