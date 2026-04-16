@@ -1,6 +1,8 @@
 import asyncio
 import html
 import json
+import os
+import time
 
 import pyrogram.errors
 from pyrogram.client import Client as PyrogramClient
@@ -11,6 +13,31 @@ from kmua.common.utils import get_reply_target
 from kmua.logger import logger
 
 from . import utils
+
+FORBIDDEN_WORDS = []
+LAST_LOAD_TIME = 0
+FORBIDDEN_FILE_PATH = "/kmua/forbidden_titles.txt"
+
+async def get_forbidden_words():
+    global FORBIDDEN_WORDS, LAST_LOAD_TIME
+    now = time.time()
+    if FORBIDDEN_WORDS and (now - LAST_LOAD_TIME < 3600):
+        return FORBIDDEN_WORDS
+    if os.path.exists(FORBIDDEN_FILE_PATH):
+        try:
+            with open(FORBIDDEN_FILE_PATH, "r", encoding="utf-8") as f:
+                FORBIDDEN_WORDS = [line.strip().lower() for line in f if line.strip()]
+            LAST_LOAD_TIME = now
+            logger.info(f"更新违禁头衔，共 {len(FORBIDDEN_WORDS)} 个词")
+        except Exception as e:
+            logger.error(f"读取违禁词文件失败: {e}")
+    else:
+        os.makedirs(os.path.dirname(FORBIDDEN_FILE_PATH), exist_ok=True)
+        with open(FORBIDDEN_FILE_PATH, "w", encoding="utf-8") as f:
+            pass
+        FORBIDDEN_WORDS = []
+        LAST_LOAD_TIME = now
+    return FORBIDDEN_WORDS
 
 
 @PyrogramClient.on_message(
@@ -45,7 +72,17 @@ async def set_member_title(client: PyrogramClient, message: pyrogram.types.Messa
     custom_title = " ".join(message.command[1:]).strip()
     if not custom_title:
         custom_title = target.username or target.full_name
-    
+    is_admin = await common.can_user_manage_bot_in_chat(user, chat)
+    if not is_admin:
+        forbidden_list = await get_forbidden_words()
+        title_to_check = custom_title.lower()
+        for word in forbidden_list:
+            if word in title_to_check:
+                await message.reply_text(
+                    "❌ <b>更换失败</b>\n头衔中有不能说的词呢",
+                    parse_mode=pyrogram.enums.ParseMode.HTML,
+                )
+                return
     chat_config = await database.get_chat_config(chat.id)
     permissions = chat_config.title_permissions or {}
     if isinstance(permissions, str):
