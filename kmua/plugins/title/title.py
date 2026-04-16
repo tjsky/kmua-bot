@@ -16,27 +16,28 @@ from . import utils
 
 FORBIDDEN_WORDS = []
 LAST_LOAD_TIME = 0
-FORBIDDEN_FILE_PATH = "/kmua/forbidden_titles.txt"
+FORBIDDEN_FILE_PATH = "kmua/forbidden_titles.txt"
 
 async def get_forbidden_words():
     global FORBIDDEN_WORDS, LAST_LOAD_TIME
     now = time.time()
-    if FORBIDDEN_WORDS and (now - LAST_LOAD_TIME < 3600):
+    if LAST_LOAD_TIME > 0 and (now - LAST_LOAD_TIME < 3600):
         return FORBIDDEN_WORDS
     if os.path.exists(FORBIDDEN_FILE_PATH):
         try:
             with open(FORBIDDEN_FILE_PATH, "r", encoding="utf-8") as f:
                 FORBIDDEN_WORDS = [line.strip().lower() for line in f if line.strip()]
             LAST_LOAD_TIME = now
-            logger.info(f"更新违禁头衔，共 {len(FORBIDDEN_WORDS)} 个词")
+            logger.info(f"咱成功更新了违禁头衔，共 {len(FORBIDDEN_WORDS)} 个")
         except Exception as e:
-            logger.error(f"读取违禁词文件失败: {e}")
+            logger.error(f"读取违禁词文件失败了: {e}")
     else:
         os.makedirs(os.path.dirname(FORBIDDEN_FILE_PATH), exist_ok=True)
         with open(FORBIDDEN_FILE_PATH, "w", encoding="utf-8") as f:
             pass
         FORBIDDEN_WORDS = []
         LAST_LOAD_TIME = now
+        logger.info(f"你违禁词文件呢？已给你创建了空文件: {FORBIDDEN_FILE_PATH}")
     return FORBIDDEN_WORDS
 
 
