@@ -135,7 +135,7 @@ class _AppConfig(pydantic.BaseModel):
     # Oldest history items are stripped first when the total exceeds this limit.
     # 0 = no limit.
     agent_multimodal_max_items: int = 4
-    agent_extra_tools: list[str] = ["duckduckgo_search", "webfetch"]
+    agent_extra_tools: list[str] = ["websearch", "webfetch"]
     # crawl4ai API server for JS-rendered pages (e.g. docker run crawl4ai)
     # if not set, js=True requests will return an error
     agent_crawl_api_url: str | None = None
@@ -169,8 +169,8 @@ class _AppConfig(pydantic.BaseModel):
     )
     # Periodic sticker / reaction: force-inject the tool hint every N conversations.
     # 0 = disabled.
-    agent_periodic_sticker_interval: int = 7
-    agent_periodic_reaction_interval: int = 7
+    agent_periodic_sticker_interval: int = 0
+    agent_periodic_reaction_interval: int = 0
     # Code self-awareness: allow agent to read its own codebase to understand other features
     agent_code_awareness: bool = True
     # Custom file patterns to exclude from code repository (in addition to default security exclusions)
