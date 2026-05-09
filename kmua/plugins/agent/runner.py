@@ -79,6 +79,8 @@ async def run_agent(
     the normal wake flow and the follow-up flow.
     """
 
+    is_guest_mode = deps.is_guest_mode
+
     if not is_chat_allowed(chat_id):
         return
 
@@ -98,8 +100,11 @@ async def run_agent(
         use_model = effective_multimodal if needs_multimodal else model
 
     try:
-        async with TypingKeepAlive(client, message):
-            if app_config.agent_streaming:
+        ctx = TypingKeepAlive(client, message) if not is_guest_mode else None
+        if ctx is not None:
+            await ctx.__aenter__()
+        try:
+            if app_config.agent_streaming and not is_guest_mode:
                 streaming_output: StreamingOutput | None = None
                 output: Any = None
                 try:
@@ -118,7 +123,7 @@ async def run_agent(
                                             if isinstance(event.part, TextPart):
                                                 if streaming_output is None:
                                                     streaming_output = StreamingOutput(
-                                                        client, message
+                                                        client, message, deps=deps
                                                     )
                                                 await streaming_output.append_delta(
                                                     event.part.content
@@ -127,7 +132,7 @@ async def run_agent(
                                             if isinstance(event.delta, TextPartDelta):
                                                 if streaming_output is None:
                                                     streaming_output = StreamingOutput(
-                                                        client, message
+                                                        client, message, deps=deps
                                                     )
                                                 await streaming_output.append_delta(
                                                     event.delta.content_delta
@@ -170,7 +175,7 @@ async def run_agent(
                                     elif streaming_output is not None:
                                         await streaming_output.finalize()
                                     elif output:
-                                        await reply_output(client, message, output)
+                                        await reply_output(client, message, output, deps=deps)
                         # Save full output for follow-up detection
                         full_output = ""
                         if streaming_output is not None:
@@ -235,9 +240,10 @@ async def run_agent(
                                             f"The stupid agent returned 'final_result' as text🤡 for user {user_id}"
                                         )
                                     else:
-                                        await reply_output(
-                                            client, message, part.content
-                                        )
+                                        if not is_guest_mode:
+                                            await reply_output(
+                                                client, message, part.content
+                                            )
                                         full_output_parts.append(part.content)
                                         replied = True
                         elif Agent.is_model_request_node(node):
@@ -268,8 +274,13 @@ async def run_agent(
                                     f"Agent returned {type(output).__name__} for user {user_id}"
                                 )
                             elif not replied and output:
-                                await reply_output(client, message, output)
+                                if not is_guest_mode:
+                                    await reply_output(client, message, output)
                                 full_output_parts.append(output)
+                            # In guest mode, send a single collected reply at the end
+                            if is_guest_mode and full_output_parts:
+                                full_text = "\n".join(full_output_parts)
+                                await reply_output(client, message, full_text, deps=deps)
                     # Save full output for follow-up detection
                     full_output = "\n".join(full_output_parts)
                     if (
@@ -296,15 +307,22 @@ async def run_agent(
                         agent_run.all_messages(),
                         ttl=app_config.cachettl_agent_history,
                     )
+        finally:
+            if ctx is not None:
+                await ctx.__aexit__(None, None, None)
     except TypeError as e:
         # https://github.com/pydantic/pydantic-ai/issues/527
         # https://github.com/pydantic/pydantic-ai/issues/1813
         # https://github.com/pydantic/pydantic-ai/issues/1746
         logger.exception(f"Agent run error: {e}")
-        await message.reply_text(
-            f"{i18n.t('bot.msg.agent.errors.too_fast', locale=lang)}\n<code>{e}</code>",
-            parse_mode=pyrogram.enums.ParseMode.HTML,
-        )
+        err_text = i18n.t("bot.msg.agent.errors.too_fast", locale=lang)
+        if is_guest_mode:
+            await reply_output(client, message, f"{err_text}\n{e}", deps=deps)
+        else:
+            await message.reply_text(
+                f"{err_text}\n<code>{e}</code>",
+                parse_mode=pyrogram.enums.ParseMode.HTML,
+            )
     except (
         pydantic_ai.exceptions.ModelHTTPError,
         pydantic_ai.exceptions.ModelAPIError,
@@ -321,7 +339,12 @@ async def run_agent(
             ]
         )
         status_code = getattr(e, "status_code", None)
-        if status_code == 400:
+        if is_guest_mode:
+            base = i18n.t("bot.msg.agent.errors.interrupted", locale=lang).format(
+                error=f"{e.__class__.__name__}"
+            )
+            await reply_output(client, message, base, deps=deps)
+        elif status_code == 400:
             await message.reply_text(
                 i18n.t("bot.msg.agent.errors.model_http_400", locale=lang),
                 reply_markup=markup,
@@ -341,8 +364,10 @@ async def run_agent(
             )
     except Exception as e:
         logger.error(f"Agent run error: {e.__class__.__name__} - {e}")
-        await message.reply_text(
-            i18n.t("bot.msg.agent.errors.interrupted", locale=lang).format(
-                error=f"{e.__class__.__name__}"
-            )
+        err_text = i18n.t("bot.msg.agent.errors.interrupted", locale=lang).format(
+            error=f"{e.__class__.__name__}"
         )
+        if is_guest_mode:
+            await reply_output(client, message, err_text, deps=deps)
+        else:
+            await message.reply_text(err_text)

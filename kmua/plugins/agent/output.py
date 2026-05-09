@@ -10,6 +10,7 @@ from pyrogram.client import Client as PyrogramClient
 from kmua.common.memory_store import memttlcache
 from kmua.logger import logger
 from kmua.plugins.agent import datatype, state
+from kmua.plugins.agent.guest_mode import answer_guest_query
 from kmua.plugins.agent.styling import convert_md
 
 _MD_SEPARATOR_RE = re.compile(r"^(?:[-*_][ \t]*){3,}$")
@@ -21,8 +22,13 @@ def _is_markdown_separator_only_chunk(chunk: str) -> bool:
 
 
 async def reply_output(
-    client: PyrogramClient, message: pyrogram.types.Message, text: str
+    client: PyrogramClient,
+    message: pyrogram.types.Message,
+    text: str,
+    deps: "datatype.ContextDeps | None" = None,
 ):
+    if message.guest_query_id:
+        return await answer_guest_query(client, message, text, deps=deps)
     if message.chat is None:
         return
     is_group_chat = message.chat.type in (
@@ -181,9 +187,11 @@ class StreamingOutput:
         self,
         client: PyrogramClient,
         message: pyrogram.types.Message,
+        deps: "datatype.ContextDeps | None" = None,
     ):
         self.client = client
         self.message = message
+        self.deps = deps
         self.current_text = ""
         self._last_sent_text = ""
         self.reply_message: pyrogram.types.Message | None = None
@@ -198,6 +206,7 @@ class StreamingOutput:
         self._edit_task: asyncio.Task | None = None
         self._start_task: asyncio.Task | None = None
         self._stop = False
+        self.is_guest = bool(message.guest_query_id)
 
     def _is_within_limits(self) -> bool:
         current_time = asyncio.get_event_loop().time()
@@ -261,6 +270,8 @@ class StreamingOutput:
             await self._do_edit(text)
 
     async def _start(self):
+        if self.is_guest:
+            return
         await self._send_new_message(self.current_text)
         self._edit_task = asyncio.create_task(self._edit_loop())
 
@@ -268,6 +279,8 @@ class StreamingOutput:
         if not delta:
             return
         self.current_text += delta
+        if self.is_guest:
+            return
         if self.start_time == 0.0 and self.current_text.strip():
             self.start_time = asyncio.get_event_loop().time()
             self._stop = False
@@ -275,6 +288,12 @@ class StreamingOutput:
 
     async def finalize(self):
         self._stop = True
+        if self.is_guest:
+            if self.current_text:
+                from kmua.plugins.agent.guest_mode import answer_guest_query
+
+                await answer_guest_query(self.client, self.message, self.current_text, deps=self.deps)
+            return
         if self._start_task and not self._start_task.done():
             await self._start_task
         if self._edit_task and not self._edit_task.done():
