@@ -42,7 +42,7 @@ async def ipinfo(client: Client, message: Message):
         await message.reply_text(i18n.t("bot.msg.ip.no_ip_provided", locale=lang))
         return
 
-     if not _is_valid_ip_or_domain(ip):
+    if not _is_valid_ip_or_domain(ip):
         await message.reply_text(i18n.t("bot.msg.ip.no_ip_provided", locale=lang))
         return
 
