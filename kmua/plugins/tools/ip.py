@@ -1,8 +1,10 @@
 import contextlib
 import ipaddress
+import ipaddress
 from urllib.parse import urlparse
 
 import httpx
+import idna
 import idna
 from pyrogram import Client, filters
 from pyrogram.enums import ChatType, ParseMode
@@ -66,7 +68,8 @@ async def ipinfo(client: Client, message: Message):
         )
     finally:
         await common.memstore.delete(querying_key)
-    
+
+
 _DOMAIN_MAX_LEN = 253
 
 
@@ -90,6 +93,7 @@ def _is_valid_ip_or_domain(value: str) -> bool:
     except idna.IDNAError:
         return False
     return True
+
 
 async def _get_ip_info(url: str, lang: str) -> str:
     async with httpx.AsyncClient() as client:
