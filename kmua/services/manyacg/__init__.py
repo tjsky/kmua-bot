@@ -160,10 +160,17 @@ if app_config.manyacg_api_url:
         url=app_config.manyacg_api_url, api_key=app_config.manyacg_api_key
     )
 
+# Locale prefix (e.g. /en/, /zh-cn/) is optional: pixiv serves
+# https://www.pixiv.net/en/artworks/<id> as well as the bare path.
 PIXIV_REGEX = re.compile(
-    r"pixiv\.net/(?:artworks/|i/|member_illust\.php\?(?:[\w=&]*\&|)illust_id=)(\d+)"
+    # The pre-illust_id query-parameter skip is hard-bounded: unbounded
+    # [\w=&]*& re-scans every split point from every start offset on a long
+    # "?a=a&a=..." tail with no match (quadratic over the message text).
+    # Real member_illust.php links carry one short mode parameter.
+    r"pixiv\.net/(?:[a-z]{2}(?:-[a-z]{2})?/)?(?:artworks/|i/|member_illust\.php\?(?:[\w=&]{0,64}&)?illust_id=)(\d+)"
 )
-TWITTER_REGEX = re.compile(r"(?:twitter|x)\.com/([^/]+)/status/(\d+)")
+# Twitter/X is handled natively by kmua.plugins.twitter (FxEmbed API); keep
+# manyacg out of it so pure-text tweets no longer fail here.
 BILIBILI_REGEX = re.compile(r"t\.bilibili\.com/(\d+)|bilibili\.com/opus/(\d+)")
 DANBOORU_REGEX = re.compile(r"danbooru\.donmai\.us/posts/\d+")
 KEMONO_REGEX = re.compile(r"kemono\.cr/\w+/user/\d+/post/\d+")
@@ -171,7 +178,6 @@ YANDERE_REGEX = re.compile(r"yande\.re/post/show/\d+")
 NHENTAI_REGEX = re.compile(r"nhentai\.net/g/\d+")
 ARTWORK_ALL_REGEX = [
     PIXIV_REGEX,
-    TWITTER_REGEX,
     BILIBILI_REGEX,
     DANBOORU_REGEX,
     KEMONO_REGEX,
@@ -179,5 +185,17 @@ ARTWORK_ALL_REGEX = [
     NHENTAI_REGEX,
 ]
 
+# Stable site keys used by the per-site parse switch (webapp panel); order
+# must match ARTWORK_ALL_REGEX.
+ARTWORK_SITES = ["pixiv", "bilibili", "danbooru", "kemono", "yandere", "nhentai"]
 
-__all__ = ["manyacg_client", "ARTWORK_ALL_REGEX"]
+
+def match_artwork_site(url: str) -> str | None:
+    """Return the site key whose regex matches *url*, or None."""
+    for site, pattern in zip(ARTWORK_SITES, ARTWORK_ALL_REGEX):
+        if pattern.search(url):
+            return site
+    return None
+
+
+__all__ = ["manyacg_client", "ARTWORK_ALL_REGEX", "ARTWORK_SITES", "match_artwork_site"]

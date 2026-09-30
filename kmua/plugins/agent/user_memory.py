@@ -8,7 +8,7 @@ from kmua import affection
 from kmua.common.memory_store import memttlcache
 from kmua.config import app_config
 from kmua.logger import logger
-from kmua.plugins.agent import datatype, state
+from kmua.plugins.agent import datatype, quota, state, trace
 
 _user_memory_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
 _user_memory_locks_lock = asyncio.Lock()
@@ -27,39 +27,63 @@ async def update_user_memory(
     agent: Agent[None, datatype.UserMemoryResult],
     message_text: str,
     user_id: int,
+    subject: quota.Subject,
 ):
+    if not await quota.can_start(subject):
+        # 没额度就不更新记忆, 静默跳过: 这是后台工作, 不需要打扰用户。
+        logger.debug(f"Skip updating memory for user {user_id}: no quota")
+        return
     lock = await _get_user_memory_lock(user_id)
     async with lock:
-        # 每个用户 30 秒内至多更新一次记忆
-        # 能超过这个限制的一般是 spammer 了...
+        # 防止 spammer 刷记忆
         throttle_key = f"user_memory_update_throttle:{user_id}"
         if await memttlcache.get(throttle_key):
             logger.debug(
                 f"Skip updating memory for user {user_id} due to 30s rate limit"
             )
             return
-        await memttlcache.set(throttle_key, True, ttl=30)
+        await memttlcache.set(throttle_key, True, ttl=300)
 
         logger.debug(f"Updating memory for user {user_id}")
-        old_memory = await memttlcache.get(f"user_memory_{user_id}")
+        old_memory = await memttlcache.get(state.memory_key(user_id))
         if old_memory and isinstance(old_memory, datatype.ChatMemoryy):
             message_text = f"根据已有的记忆和新的聊天消息, 更新对用户的记忆, 并决定对用户的好感变化.\n旧的记忆: {old_memory}\n新的聊天消息: {message_text}"
 
         # 使用超时控制防止模型调用阻塞事件循环
-        timeout = app_config.agent_model_timeout
-        coro = agent.run(
-            output_type=datatype.UserMemoryResult,
-            user_prompt=f"根据以下聊天消息, 总结出关于用户的重要信息, 并决定对用户的好感变化:\n {message_text}",
-        )
+        session = await trace.start_trace("memory", user_id=user_id)
+        try:
+            timeout = app_config.agent_model_timeout
+            coro = agent.run(
+                output_type=datatype.UserMemoryResult,
+                user_prompt=(
+                    "根据以下聊天记录, 总结出关于用户的重要信息, 并决定对用户的好感变化. "
+                    "记录已按聊天分组并标注时间, 注意区分用户在不同聊天中的表现:\n"
+                    f" {message_text}"
+                ),
+            )
 
-        if timeout > 0:
-            try:
-                memory_result = await asyncio.wait_for(coro, timeout=timeout)
-            except TimeoutError:
-                logger.warning(f"update_user_memory timed out for user {user_id}")
-                return  # 超时后静默返回，不影响主流程
-        else:
-            memory_result = await coro
+            if timeout > 0:
+                try:
+                    memory_result = await asyncio.wait_for(coro, timeout=timeout)
+                except TimeoutError as e:
+                    trace.mark_trace(session, status="timeout", error=e)
+                    logger.warning(f"update_user_memory timed out for user {user_id}")
+                    return  # 超时后静默返回，不影响主流程
+            else:
+                memory_result = await coro
+
+            # 这一次模型调用照常花 token, 按触发它的那条消息结算 —— 记忆是这次调用
+            # 的产物, 不记的话这段开销在任何地方都看不见。
+            await quota.settle(subject, memory_result.usage)
+            # 记录只覆盖这次模型调用: 之后的记忆合并与好感度更新都不是它的一部分。
+            trace.mark_trace(
+                session, usage=memory_result.usage, output=str(memory_result.output)
+            )
+        except Exception as e:
+            trace.mark_trace(session, status="error", error=e)
+            raise
+        finally:
+            trace.finish_trace(session)
 
         logger.debug(f"Agent memory history: {memory_result.output}")
         result = memory_result.output
@@ -79,7 +103,7 @@ async def update_user_memory(
             logger.exception(f"Error updating user affection: {e}")
         new_memory = result.get_memory()
         if old_memory:
-            # 合并记忆列表, 每个字段去重(?), 且限制长度为 3
+            # 合并记忆列表, 每个字段去重, 且限制长度为 3
             for field in datatype.ChatMemoryy.model_fields:
                 old_value = getattr(old_memory, field, [])
                 new_value = getattr(new_memory, field, [])

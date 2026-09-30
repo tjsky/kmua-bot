@@ -12,26 +12,35 @@ from kmua import common, database
 from kmua.config import app_config
 from kmua.logger import logger
 
-from . import provider, sticker_vec
+from . import provider, quota, sticker_vec, trace
 from .whitelist import is_chat_allowed
 
 embedder: Embedder | None = None
+_embed_model: provider.EmbeddingModel | None = None
 _description_agent: Agent[None, str] | None = None
 
+# Effective embedding dimension used by sticker_vec.init(). None until
+# probed (Ollama) or forced to the configured value (OpenAI-compatible).
+_embed_dimensions: int | None = None
+_embed_dimensions_resolved = False
+
 if app_config.agent_sticker_memory:
-    embedder = Embedder(
-        provider.make_embed_model(app_config.agent_sticker_embed_model),
-        settings=EmbeddingSettings(
+    _embed_model = provider.make_embed_model(app_config.agent_sticker_embed_model)
+    embed_settings: EmbeddingSettings | None = None
+    if _embed_model.system != "ollama":
+        embed_settings = EmbeddingSettings(
             dimensions=app_config.agent_sticker_embed_dimensions
-        ),
-    )
+        )
+    embedder = Embedder(_embed_model, settings=embed_settings)
 
     _desc_spec = app_config.agent_sticker_description_model or app_config.agent_model
-    _description_agent = Agent(
-        model=provider.make_chat_model(_desc_spec),
-        output_type=str,
-        retries=2,
-    )
+    if _desc_spec:
+        _description_agent = Agent(
+            model=provider.make_chat_model(_desc_spec),
+            output_type=str,
+            capabilities=[trace.AgentTraceCapability()],
+            retries=2,
+        )
 
 
 async def get_embedding(text: str) -> list[float] | None:
@@ -45,7 +54,41 @@ async def get_embedding(text: str) -> list[float] | None:
         return None
 
 
-async def _get_description(image_bytes: bytes, mime_type: str) -> str | None:
+async def ensure_embed_dimensions() -> int:
+    """Return the embedding dimension for the sticker vector store.
+
+    For Ollama providers, the model's native vector length is probed once via
+    ``/api/embed`` so ``sticker_vec`` creates its sqlite-vec table with
+    matching dimensions. OpenAI-compatible providers use
+    ``agent_sticker_embed_dimensions`` as configured. On probe failure the
+    configured dimension is returned with an error log (embedding will likely
+    fail until Ollama is reachable).
+    """
+    global _embed_dimensions, _embed_dimensions_resolved
+    if _embed_dimensions_resolved:
+        return _embed_dimensions or app_config.agent_sticker_embed_dimensions
+    _embed_dimensions_resolved = True
+    if isinstance(_embed_model, provider.OllamaEmbeddingModel):
+        try:
+            _embed_dimensions = await _embed_model.detect_dimensions()
+            logger.info(
+                f"Ollama embed model {_embed_model.model_name} "
+                f"native dimension: {_embed_dimensions}"
+            )
+        except Exception as e:
+            logger.error(
+                f"ollama embedding dimension detection failed: "
+                f"{e.__class__.__name__}: {e}; "
+                f"falling back to agent_sticker_embed_dimensions="
+                f"{app_config.agent_sticker_embed_dimensions}"
+            )
+            _embed_dimensions = None
+    return _embed_dimensions or app_config.agent_sticker_embed_dimensions
+
+
+async def _get_description(
+    image_bytes: bytes, mime_type: str, subject: quota.Subject
+) -> str | None:
     if _description_agent is None:
         return None
     try:
@@ -61,30 +104,52 @@ async def _get_description(image_bytes: bytes, mime_type: str) -> str | None:
             content_part = BinaryContent(data=image_bytes, media_type=mime_type)  # type: ignore
 
         # 使用超时控制防止模型调用阻塞事件循环（贴纸描述使用小模型超时）
-        timeout = app_config.agent_small_model_timeout
-        coro = _description_agent.run(
-            [content_part, app_config.agent_sticker_description_prompt]
-        )
+        session = await trace.start_trace("sticker_description", model_role="small")
+        try:
+            timeout = app_config.agent_small_model_timeout
+            coro = _description_agent.run(
+                [content_part, app_config.agent_sticker_description_prompt]
+            )
 
-        if timeout > 0:
-            try:
-                result = await asyncio.wait_for(coro, timeout=timeout)
-            except TimeoutError:
-                logger.warning(f"sticker description timed out after {timeout}s")
-                return None
-        else:
-            result = await coro
+            if timeout > 0:
+                try:
+                    result = await asyncio.wait_for(coro, timeout=timeout)
+                except TimeoutError as e:
+                    trace.mark_trace(session, status="timeout", error=e)
+                    logger.warning(f"sticker description timed out after {timeout}s")
+                    return None
+            else:
+                result = await coro
 
-        return result.output
+            # 贴纸描述也是一次模型调用: 按发送贴纸的那条消息结算。
+            await quota.settle(subject, result.usage)
+            trace.mark_trace(session, usage=result.usage, output=result.output)
+            return result.output
+        except Exception as e:
+            trace.mark_trace(session, status="error", error=e)
+            logger.error(f"sticker description error: {e.__class__.__name__}: {e}")
+            return None
+        finally:
+            trace.finish_trace(session)
     except Exception as e:
         logger.error(f"sticker description error: {e.__class__.__name__}: {e}")
         return None
+
+
+def sample_rate_for(chat_count: int) -> float:
+    """入库采样率: 库存低于 warmup 目标时线性放大到 1.0, 加快冷启动填充."""
+    base = app_config.agent_sticker_memory_sample_rate
+    target = app_config.agent_sticker_warmup_count
+    if not target or target <= 0 or chat_count >= target:
+        return base
+    return base + (1.0 - base) * (1.0 - chat_count / target)
 
 
 async def _process_sticker(
     client: PyrogramClient,
     sticker: pyrogram.types.Sticker,
     chat_id: int,
+    subject: quota.Subject,
 ) -> None:
     file_unique_id = sticker.file_unique_id
     file_id = sticker.file_id
@@ -119,7 +184,7 @@ async def _process_sticker(
         return
 
     mime_type = "video/webm" if sticker.is_video else "image/webp"
-    description = await _get_description(image_bytes, mime_type)
+    description = await _get_description(image_bytes, mime_type, subject)
     if not description:
         logger.warning(f"sticker {file_unique_id}: no description generated, skipping")
         return
@@ -133,6 +198,130 @@ async def _process_sticker(
 
 
 _sticker_filter = filters.sticker & (filters.group) & ~filters.bot
+
+
+async def _is_admin_actor(
+    client: PyrogramClient, message: pyrogram.types.Message
+) -> bool:
+    """Whether the message author is an administrator of the chat.
+
+    Shared guard for the sticker admin commands.
+    """
+    user = message.from_user
+    if not user or not user.id:
+        return False
+    chat = message.chat
+    if not chat or not chat.id:
+        return False
+    if not is_chat_allowed(chat.id):
+        return False
+    try:
+        member = await common.get_chat_member(client, chat.id, user.id)
+    except Exception:
+        return False
+    return member.status in (
+        pyrogram.enums.ChatMemberStatus.ADMINISTRATOR,
+        pyrogram.enums.ChatMemberStatus.OWNER,
+    )
+
+
+@PyrogramClient.on_message(filters.command("addsticker") & filters.group, group=11)
+async def add_sticker_command(
+    client: PyrogramClient, message: pyrogram.types.Message
+) -> None:
+    """Let a group administrator add a sticker to this chat's memory.
+
+    Reply to a sticker message with /addsticker; the sticker goes through
+    the same pipeline as automatic sampling (download, description,
+    embedding, store).
+    """
+    if not app_config.agent_sticker_memory:
+        return
+    if not await _is_admin_actor(client, message):
+        return
+    user = message.from_user
+    if not user or not user.id:
+        return
+    chat = message.chat
+    if not chat or not chat.id:
+        return
+    reply = message.reply_to_message
+    if reply is None or reply.sticker is None:
+        await message.reply_text("请回复一条贴纸消息")
+        return
+    sticker = reply.sticker
+    chat_id = chat.id
+    subject = quota.subject_of(message)
+    if not await quota.can_start(subject):
+        logger.debug(f"Skip sticker memory for chat {chat_id}: no quota")
+        return
+    common.spawn(
+        _process_sticker(client, sticker, chat_id, subject),
+        name=f"sticker-memory-{chat_id}",
+    )
+    logger.info(
+        f"Sticker {sticker.file_unique_id} added to chat {chat_id} by {user.id}"
+    )
+    await message.reply_text("这个贴纸我记下啦, 之后可能会用它")
+
+
+@PyrogramClient.on_message(filters.command("delsticker") & filters.group, group=11)
+async def del_sticker_command(
+    client: PyrogramClient, message: pyrogram.types.Message
+) -> None:
+    """Let a group administrator remove a sticker from this chat's memory.
+
+    Reply to a sticker message with /delsticker; the sticker is dropped from
+    the chat's sticker store (automatic eviction still manages the rest).
+    """
+    if not app_config.agent_sticker_memory:
+        return
+    if not await _is_admin_actor(client, message):
+        return
+    user = message.from_user
+    if not user or not user.id:
+        return
+    chat = message.chat
+    if not chat or not chat.id:
+        return
+    reply = message.reply_to_message
+    if reply is None or reply.sticker is None:
+        await message.reply_text("请回复一条贴纸消息")
+        return
+    deleted = await sticker_vec.delete(reply.sticker.file_unique_id, chat.id)
+    if deleted:
+        logger.info(
+            f"Sticker {reply.sticker.file_unique_id} removed from "
+            f"chat {chat.id} by {user.id}"
+        )
+        await message.reply_text("以后不会发这个贴纸啦 (只要别人也不发...")
+    else:
+        await message.reply_text("这个贴纸本就不在库中呢")
+
+
+@PyrogramClient.on_message(filters.command("clearsticker") & filters.group, group=11)
+async def clear_sticker_command(
+    client: PyrogramClient, message: pyrogram.types.Message
+) -> None:
+    """Let a group administrator wipe this chat's entire sticker memory."""
+    if not app_config.agent_sticker_memory:
+        return
+    if not await _is_admin_actor(client, message):
+        return
+    user = message.from_user
+    if not user or not user.id:
+        return
+    chat = message.chat
+    if not chat or not chat.id:
+        return
+    removed = await sticker_vec.clear(chat.id)
+    if removed:
+        logger.info(
+            f"Sticker memory cleared for chat {chat.id} by {user.id}: {removed} stickers"
+        )
+        await message.reply_text(f"已清空本群的贴纸记忆 ({removed} 张贴纸)")
+    else:
+        await message.reply_text("本群贴纸库本来就是空的呢")
 
 
 @PyrogramClient.on_message(_sticker_filter, group=11)
@@ -151,11 +340,19 @@ async def on_sticker(client: PyrogramClient, message: pyrogram.types.Message) ->
     sticker = message.sticker
     if sticker is None:
         return
-    if not common.random_chance(app_config.agent_sticker_memory_sample_rate):
+    chat_config = await database.get_chat_config(chat.id)
+    if not chat_config.ai_reply:
         return
-    if not (await database.get_chat_config(chat.id)).ai_reply:
+    if not chat_config.sticker_memory_enabled:
+        return
+    subject = quota.subject_of(message)
+    if not await quota.can_start(subject):
+        logger.debug(f"Skip sticker memory for chat {chat.id}: no quota")
+        return
+    count = await sticker_vec.count(chat.id)
+    if not common.random_chance(sample_rate_for(count)):
         return
     common.spawn(
-        _process_sticker(client, sticker, chat.id),
+        _process_sticker(client, sticker, chat.id, subject),
         name=f"sticker-memory-{chat.id}",
     )

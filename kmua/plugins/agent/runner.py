@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 from typing import Any
 
 import pydantic_ai
@@ -8,7 +9,6 @@ from pydantic_ai import (
     UserContent,
 )
 from pydantic_ai.messages import (
-    MULTI_MODAL_CONTENT_TYPES,
     ModelMessage,
     PartDeltaEvent,
     PartStartEvent,
@@ -19,25 +19,30 @@ from pyrogram.client import Client as PyrogramClient
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from kmua.common.memory_store import memttlcache
+from kmua.common.utils import GROUP_CHAT_TYPES
 from kmua.config import app_config
 from kmua.i18n import i18n
 from kmua.logger import logger
-from kmua.plugins.agent import datatype, provider, state
+from kmua.plugins.agent import datatype, provider, quota, safety, state, trace
+from kmua.plugins.agent.cache_stats import log_run_cache_stats
 from kmua.plugins.agent.datatype import AskUserOutput, EndTurn
 from kmua.plugins.agent.output import StreamingOutput, TypingKeepAlive, reply_output
-from kmua.plugins.agent.prompt import check_needs_multimodal
+from kmua.plugins.agent.prompt import (
+    check_needs_multimodal,
+    transcribe_multimodal_content,
+    transcribe_multimodal_history,
+)
 from kmua.plugins.agent.whitelist import is_chat_allowed
 
 
 async def get_chat_model_override(chat_id: int, role: str = "main") -> str | None:
-    """Return the per-chat model override spec for the given role, or None if not set."""
     return await memttlcache.get(state.chat_model_override_key(chat_id, role))
 
 
 async def set_chat_model_override(
     chat_id: int, model_spec: str | None, role: str = "main"
 ) -> None:
-    """Set (or clear, when model_spec is None) the per-chat model override for the given role."""
+    """Set the per-chat model override for the given role; None clears it."""
     key = state.chat_model_override_key(chat_id, role)
     if model_spec is None:
         await memttlcache.delete(key)
@@ -46,17 +51,94 @@ async def set_chat_model_override(
 
 
 async def get_chat_prompt_override(chat_id: int) -> str | None:
-    """Return the per-chat system prompt override, or None if not set."""
     return await memttlcache.get(state.chat_prompt_override_key(chat_id))
 
 
 async def set_chat_prompt_override(chat_id: int, prompt: str | None) -> None:
-    """Set (or clear, when prompt is None) the per-chat system prompt override."""
+    """Set the per-chat system prompt override; None clears it."""
     key = state.chat_prompt_override_key(chat_id)
     if prompt is None:
         await memttlcache.delete(key)
     else:
         await memttlcache.set(key, prompt)
+
+
+@asynccontextmanager
+async def _iter_with_spill_session(
+    agi: Agent[Any, Any],
+    *,
+    chat_id: int,
+    user_id: int,
+    model: Any,
+    model_settings: Any,
+    user_prompt: Any,
+    instructions: Any,
+    message_history: Any,
+    deps: Any,
+    usage_limits: Any,
+):
+    """Run agi.iter with the current (chat, user) bound as the spill session,
+    so spilled tool outputs are scoped to this conversation."""
+    token = safety.set_spill_session(f"{chat_id}_{user_id}")
+    try:
+        async with agi.iter(
+            model=model,
+            model_settings=model_settings,
+            user_prompt=user_prompt,
+            instructions=instructions,
+            message_history=message_history,
+            deps=deps,
+            usage_limits=usage_limits,
+        ) as agent_run:
+            # Interjections enqueue straight into this run (see
+            # state.get_active_run), so the pending-message drain delivers
+            # them on the next model request without a hook round-trip.
+            state.register_active_run(chat_id, user_id, agent_run)
+            yield agent_run
+    finally:
+        state.unregister_active_run(chat_id, user_id)
+        safety.reset_spill_session(token)
+
+
+_COVERAGE_MAX_MEDIA = 256
+
+
+async def advance_prompt_coverage(
+    chat_id: int, user_id: int, update: state.PromptCoverage
+) -> None:
+    """Merge one turn's delivered content into the conversation coverage cursor.
+
+    Called only after the run's history was persisted, so a failed turn
+    leaves the cursor untouched and the next turn re-sends its prompt fully.
+    """
+    key = state.prompt_coverage_key(chat_id, user_id)
+    cov = await memttlcache.get(key)
+    if cov is None:
+        cov = state.PromptCoverage()
+    cov.last_message_id = max(cov.last_message_id, update.last_message_id)
+    for unique, number in update.sent_media.items():
+        cov.sent_media[unique] = number
+    new_max = max(update.sent_media.values(), default=0)
+    cov.next_number = max(cov.next_number, new_max + 1)
+    if len(cov.sent_media) > _COVERAGE_MAX_MEDIA:
+        # keep only this turn's media: recency beats completeness
+        cov.sent_media = dict(update.sent_media)
+    await memttlcache.set(key, cov, ttl=app_config.cachettl_agent_history)
+
+
+async def _stop_typing_keepalive(
+    typing_keepalive: TypingKeepAlive | None,
+) -> None:
+    """Stop a caller-owned typing task without masking the agent outcome."""
+    if typing_keepalive is None:
+        return
+    stop = getattr(typing_keepalive, "stop", None)
+    if stop is None:
+        return
+    try:
+        await stop()
+    except Exception as e:
+        logger.debug(f"Failed to stop typing keepalive: {e.__class__.__name__} - {e}")
 
 
 async def run_agent(
@@ -71,49 +153,90 @@ async def run_agent(
     multimodal_model: Any,
     model: Any,
     lang: str,
+    subject: quota.Subject,
+    trace_kind: str,
     additional_instructions: str | None = None,
+    typing_keepalive: TypingKeepAlive | None = None,
+    coverage_meta: state.PromptCoverage | None = None,
 ) -> None:
     """Run the agent with an overall wall-clock timeout guard.
 
-    Wraps :func:`_run_agent_impl` with ``asyncio.wait_for`` so that a stuck
-    model response or tool call can never block a dispatcher worker (and thus
-    the whole event loop) indefinitely. The timeout is controlled by
-    ``app_config.agent_run_timeout`` (0 disables it).
+    ``typing_keepalive`` is normally started by the caller before context
+    collection. The runner owns cleanup on every exit, including cancellation,
+    timeout, and model errors, so an error reply cannot leave a live indicator.
+
+    ``subject`` names who pays for this call. It has no default because only the
+    caller knows who spoke: the message inside an ask-user callback is the bot's
+    own, so deriving the subject from it would charge the bot.
+
+    ``trace_kind`` names this run in the recorded trace (they are not all
+    conversations), and has no default for the same reason as ``subject``.
     """
     timeout = app_config.agent_run_timeout
-    coro = _run_agent_impl(
-        agi=agi,
-        client=client,
-        message=message,
-        user_id=user_id,
+    session = await trace.start_trace(
+        trace_kind,
         chat_id=chat_id,
-        user_prompt=user_prompt,
-        history=history,
-        deps=deps,
-        multimodal_model=multimodal_model,
-        model=model,
-        lang=lang,
-        additional_instructions=additional_instructions,
+        user_id=user_id,
+        message_id=message.id,
+        streaming=app_config.agent_streaming,
     )
-    if not timeout or timeout <= 0:
-        await coro
+    # 额度闸门: 只预检, 不扣费(用量跑完才知道), 扣减在 impl 里按实际用量完成。
+    if not is_chat_allowed(chat_id):
+        trace.finish_trace(session, status="rejected", reject_reason="whitelist")
+        await _stop_typing_keepalive(typing_keepalive)
+        return
+    if not await quota.can_start(subject):
+        trace.finish_trace(session, status="rejected", reject_reason="quota")
+        await quota.notify_exhausted(
+            message, subject, await quota.get_state(subject), lang
+        )
+        await _stop_typing_keepalive(typing_keepalive)
         return
     try:
-        await asyncio.wait_for(coro, timeout=timeout)
-    except TimeoutError:
-        logger.warning(
-            f"Agent run timed out after {timeout}s for user {user_id} in chat {chat_id}"
+        coro = _run_agent_impl(
+            agi=agi,
+            client=client,
+            message=message,
+            user_id=user_id,
+            chat_id=chat_id,
+            user_prompt=user_prompt,
+            history=history,
+            deps=deps,
+            multimodal_model=multimodal_model,
+            model=model,
+            lang=lang,
+            additional_instructions=additional_instructions,
+            typing_keepalive=typing_keepalive,
+            coverage_meta=coverage_meta,
+            subject=subject,
+            session=session,
         )
+        if not timeout or timeout <= 0:
+            await coro
+            return
         try:
-            err_text = i18n.t("bot.msg.agent.errors.interrupted", locale=lang).format(
-                error="Timeout"
+            await asyncio.wait_for(coro, timeout=timeout)
+        except TimeoutError as e:
+            trace.mark_trace(session, status="timeout", error=e)
+            await _stop_typing_keepalive(typing_keepalive)
+            logger.warning(
+                f"Agent run timed out after {timeout}s for user {user_id} in chat {chat_id}"
             )
-            if deps.is_guest_mode:
-                await reply_output(client, message, err_text, deps=deps)
-            else:
+            try:
+                err_text = i18n.t(
+                    "bot.msg.agent.errors.interrupted", locale=lang
+                ).format(error="Timeout")
                 await message.reply_text(err_text)
-        except Exception as e:
-            logger.error(f"Failed to send timeout notice: {e.__class__.__name__} - {e}")
+            except Exception as e:
+                logger.error(
+                    f"Failed to send timeout notice: {e.__class__.__name__} - {e}"
+                )
+    except asyncio.CancelledError:
+        trace.mark_trace(session, status="cancelled")
+        raise
+    finally:
+        await _stop_typing_keepalive(typing_keepalive)
+        trace.finish_trace(session)
 
 
 async def _run_agent_impl(
@@ -128,18 +251,21 @@ async def _run_agent_impl(
     multimodal_model: Any,
     model: Any,
     lang: str,
+    subject: quota.Subject,
     additional_instructions: str | None = None,
+    typing_keepalive: TypingKeepAlive | None = None,
+    coverage_meta: state.PromptCoverage | None = None,
+    session: trace.TraceSession | None = None,
 ) -> None:
-    """Run the agent with full streaming/non-streaming support, history saving,
-    TypingKeepAlive and unified error handling.
+    """Run the agent; single execution path shared by the wake and follow-up flows.
 
-    This is the single source of truth for agent execution shared by both
-    the normal wake flow and the follow-up flow.
+    Only a run that produced output is metered: the two success branches call
+    `quota.settle` with the run's own usage, and the error handlers below swallow the
+    exception (to reply to the user) without settling, so a failed run costs nothing.
     """
 
-    is_guest_mode = deps.is_guest_mode
-
     if not is_chat_allowed(chat_id):
+        trace.mark_trace(session, status="rejected", reject_reason="whitelist")
         return
 
     needs_multimodal = check_needs_multimodal(user_prompt, history)
@@ -151,6 +277,34 @@ async def _run_agent_impl(
         if multimodal_override
         else multimodal_model
     )
+    deps.multimodal_model = effective_multimodal
+    if app_config.agent_multimodal_mode == "transcribe":
+        if needs_multimodal:
+            sanitized_history = await transcribe_multimodal_history(
+                effective_multimodal, history, subject
+            )
+            if sanitized_history is not history:
+                history = sanitized_history
+                deps.history = history
+                # Persist the migration even when the main model later fails;
+                # otherwise the same binary would be retried on every turn.
+                try:
+                    await memttlcache.set(
+                        state.history_key(chat_id, user_id),
+                        history,
+                        ttl=app_config.cachettl_agent_history,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to cache sanitized agent history: "
+                        f"{e.__class__.__name__} - {e}"
+                    )
+            user_prompt = await transcribe_multimodal_content(
+                effective_multimodal, user_prompt, subject
+            )
+        # A text-model run must never receive historical or current media,
+        # including when the transcription provider is unavailable.
+        needs_multimodal = False
     if override_name:
         if needs_multimodal and effective_multimodal:
             use_model = effective_multimodal
@@ -159,23 +313,41 @@ async def _run_agent_impl(
     else:
         use_model = effective_multimodal if needs_multimodal else model
 
+    # Pair the per-model config options with the model actually used. Override
+    # models (per-chat /command) have no options of their own and fall back to
+    # the main model's settings.
+    if use_model is effective_multimodal:
+        model_settings = provider.make_model_settings(
+            app_config.agent_model_multimodal_options
+        )
+    else:
+        model_settings = provider.make_model_settings(app_config.agent_model_options)
+
     try:
-        ctx = TypingKeepAlive(client, message) if not is_guest_mode else None
-        if ctx is not None:
+        ctx = typing_keepalive
+        ctx_owned = ctx is None
+        if ctx is None:
+            ctx = TypingKeepAlive(client, message)
             await ctx.__aenter__()
         try:
-            if app_config.agent_streaming and not is_guest_mode:
+            if app_config.agent_streaming:
                 streaming_output: StreamingOutput | None = None
                 output: Any = None
                 try:
-                    async with agi.iter(
+                    async with _iter_with_spill_session(
+                        agi,
+                        chat_id=chat_id,
+                        user_id=user_id,
                         model=use_model,
+                        model_settings=model_settings,
                         instructions=additional_instructions,
                         user_prompt=user_prompt,
                         message_history=history,
                         deps=deps,
+                        usage_limits=safety.build_usage_limits(),
                     ) as agent_run:
-                        async for node in agent_run:
+                        node = agent_run.next_node
+                        while not Agent.is_end_node(node):
                             if Agent.is_model_request_node(node):
                                 async with node.stream(agent_run.ctx) as request_stream:
                                     async for event in request_stream:
@@ -183,7 +355,7 @@ async def _run_agent_impl(
                                             if isinstance(event.part, TextPart):
                                                 if streaming_output is None:
                                                     streaming_output = StreamingOutput(
-                                                        client, message, deps=deps
+                                                        client, message
                                                     )
                                                 await streaming_output.append_delta(
                                                     event.part.content
@@ -192,50 +364,58 @@ async def _run_agent_impl(
                                             if isinstance(event.delta, TextPartDelta):
                                                 if streaming_output is None:
                                                     streaming_output = StreamingOutput(
-                                                        client, message, deps=deps
+                                                        client, message
                                                     )
                                                 await streaming_output.append_delta(
                                                     event.delta.content_delta
                                                 )
                             elif Agent.is_call_tools_node(node):
-                                has_tool_calls = False
-                                for part in node.model_response.parts:
-                                    if part.part_kind == "tool-call":
-                                        has_tool_calls = True
-                                        args_str = str(part.args) if part.args else ""
-                                        logger.debug(
-                                            f"Tool call for user {user_id} in chat {chat_id}: "
-                                            f"{part.tool_name}({args_str})"
-                                        )
+                                has_tool_calls = any(
+                                    part.part_kind == "tool-call"
+                                    for part in node.model_response.parts
+                                )
                                 if has_tool_calls and streaming_output is not None:
                                     await streaming_output.finalize()
                                     streaming_output = None
-                            elif Agent.is_end_node(node):
-                                assert agent_run.result is not None, (
-                                    "Agent run ended without result"
+                            # next() runs the full capability lifecycle
+                            # (before/wrap/after_node_run), which drains
+                            # end-of-run pending messages into a redirect
+                            # instead of stranding them.
+                            node = await agent_run.next(node)
+                        assert agent_run.result is not None, (
+                            "Agent run ended without result"
+                        )
+                        logger.debug(
+                            f"Agent run end with result: {agent_run.result.output}"
+                        )
+                        output = agent_run.result.output
+                        if isinstance(output, (EndTurn, AskUserOutput)):
+                            if streaming_output is not None:
+                                await streaming_output.abort()
+                        else:
+                            if isinstance(output, str) and "final_result" in output:
+                                if streaming_output is not None:
+                                    await streaming_output.abort()
+                                logger.warning(
+                                    f"The stupid agent returned 'final_result' as text🤡 for user {user_id}"
                                 )
-                                logger.debug(
-                                    f"Agent run end with result: {agent_run.result.output}"
-                                )
-                                output = agent_run.result.output
-                                if isinstance(output, (EndTurn, AskUserOutput)):
-                                    if streaming_output is not None:
-                                        await streaming_output.abort()
-                                else:
-                                    # Check final_result first before sending anything
-                                    if (
-                                        isinstance(output, str)
-                                        and "final_result" in output
-                                    ):
-                                        if streaming_output is not None:
-                                            await streaming_output.abort()
-                                        logger.warning(
-                                            f"The stupid agent returned 'final_result' as text🤡 for user {user_id}"
-                                        )
-                                    elif streaming_output is not None:
-                                        await streaming_output.finalize()
-                                    elif output:
-                                        await reply_output(client, message, output, deps=deps)
+                            elif streaming_output is not None:
+                                await streaming_output.finalize()
+                            elif output:
+                                await reply_output(client, message, output)
+                        # 下面的收尾动作可能失败并跳出, 所以先结算, 免得答案已发出却不计费。
+                        await quota.settle(subject, agent_run.usage)
+                        trace.mark_trace(
+                            session,
+                            usage=agent_run.usage,
+                            output=output,
+                            model_name=use_model.model_name,
+                            model_role=(
+                                "multimodal"
+                                if use_model is effective_multimodal
+                                else "main"
+                            ),
+                        )
                         # Save full output for follow-up detection
                         full_output = ""
                         if streaming_output is not None:
@@ -245,13 +425,8 @@ async def _run_agent_impl(
                         if (
                             full_output
                             and message.chat
-                            and message.chat.type
-                            in (
-                                pyrogram.enums.ChatType.SUPERGROUP,
-                                pyrogram.enums.ChatType.GROUP,
-                            )
+                            and message.chat.type in GROUP_CHAT_TYPES
                         ):
-                            # Get last reply info from existing BotLastReply if available
                             bot_reply = await memttlcache.get(
                                 state.bot_last_reply_key(chat_id)
                             )
@@ -269,88 +444,87 @@ async def _run_agent_impl(
                             agent_run.all_messages(),
                             ttl=app_config.cachettl_agent_history,
                         )
+                        if coverage_meta is not None:
+                            await advance_prompt_coverage(
+                                chat_id, user_id, coverage_meta
+                            )
+                        log_run_cache_stats(use_model.model_name, agent_run.usage)
                 except Exception:
                     if streaming_output is not None:
                         await streaming_output.abort()
                     raise
             else:
-                async with agi.iter(
+                async with _iter_with_spill_session(
+                    agi,
+                    chat_id=chat_id,
+                    user_id=user_id,
                     model=use_model,
+                    model_settings=model_settings,
                     user_prompt=user_prompt,
                     instructions=additional_instructions,
                     message_history=history,
                     deps=deps,
+                    usage_limits=safety.build_usage_limits(),
                 ) as agent_run:
                     replied = False
                     full_output_parts: list[str] = []
                     output: Any = None
-                    async for node in agent_run:
+                    node = agent_run.next_node
+                    while not Agent.is_end_node(node):
                         if Agent.is_call_tools_node(node):
                             for part in node.model_response.parts:
-                                if part.part_kind == "tool-call":
-                                    args_str = str(part.args) if part.args else ""
-                                    logger.debug(
-                                        f"Tool call for user {user_id} in chat {chat_id}: "
-                                        f"{part.tool_name}({args_str})"
-                                    )
-                                elif part.part_kind == "text" and part.content:
-                                    # Check if content is final_result before sending
+                                if part.part_kind == "text" and part.content:
                                     if "final_result" in part.content:
                                         logger.warning(
                                             f"The stupid agent returned 'final_result' as text🤡 for user {user_id}"
                                         )
                                     else:
-                                        if not is_guest_mode:
-                                            await reply_output(
-                                                client, message, part.content
-                                            )
+                                        await reply_output(
+                                            client, message, part.content
+                                        )
                                         full_output_parts.append(part.content)
                                         replied = True
-                        elif Agent.is_model_request_node(node):
-                            for part in node.request.parts:
-                                if part.part_kind == "tool-return":
-                                    content = part.content
-                                    if isinstance(
-                                        part.content, MULTI_MODAL_CONTENT_TYPES
-                                    ):
-                                        content = "[MULTI_MODAL]"
-                                    logger.trace(
-                                        f"Tool {part.tool_name} returned for user {user_id} in chat {chat_id}: {content}"
-                                    )
-                        elif Agent.is_end_node(node):
-                            assert agent_run.result is not None, (
-                                "Agent run ended without result"
-                            )
-                            logger.debug(
-                                f"Agent run end with result: {agent_run.result.output}"
-                            )
-                            output = agent_run.result.output
-                            if isinstance(output, str) and "final_result" in output:
-                                logger.warning(
-                                    f"The stupid agent returned 'final_result' as text🤡 for user {user_id}"
-                                )
-                            elif isinstance(output, (EndTurn, AskUserOutput)):
-                                logger.debug(
-                                    f"Agent returned {type(output).__name__} for user {user_id}"
-                                )
-                            elif not replied and output:
-                                if not is_guest_mode:
-                                    await reply_output(client, message, output)
-                                full_output_parts.append(output)
-                            # In guest mode, send a single collected reply at the end
-                            if is_guest_mode and full_output_parts:
-                                full_text = "\n".join(full_output_parts)
-                                await reply_output(client, message, full_text, deps=deps)
+                        # next() runs the full capability lifecycle, which
+                        # drains end-of-run pending messages into a redirect.
+                        node = await agent_run.next(node)
+                    assert agent_run.result is not None, (
+                        "Agent run ended without result"
+                    )
+                    logger.info(f"Agent run end for user {user_id} in chat {chat_id}")
+                    logger.debug(
+                        f"Agent run end with result: {agent_run.result.output}"
+                    )
+                    output = agent_run.result.output
+                    if isinstance(output, str) and "final_result" in output:
+                        logger.warning(
+                            f"The stupid agent returned 'final_result' as text🤡 for user {user_id}"
+                        )
+                    elif isinstance(output, (EndTurn, AskUserOutput)):
+                        logger.debug(
+                            f"Agent returned {type(output).__name__} for user {user_id}"
+                        )
+                    elif not replied and output:
+                        await reply_output(client, message, output)
+                        full_output_parts.append(output)
+                    # 结算排在收尾动作之前: 收尾失败不该让这次调用免费。
+                    await quota.settle(subject, agent_run.usage)
+                    trace.mark_trace(
+                        session,
+                        usage=agent_run.usage,
+                        output=output,
+                        model_name=use_model.model_name,
+                        model_role=(
+                            "multimodal"
+                            if use_model is effective_multimodal
+                            else "main"
+                        ),
+                    )
                     # Save full output for follow-up detection
                     full_output = "\n".join(full_output_parts)
                     if (
                         full_output
                         and message.chat
-                        and message.chat.type
-                        in (
-                            pyrogram.enums.ChatType.SUPERGROUP,
-                            pyrogram.enums.ChatType.GROUP,
-                        )
+                        and message.chat.type in GROUP_CHAT_TYPES
                     ):
                         bot_reply = await memttlcache.get(
                             state.bot_last_reply_key(chat_id)
@@ -367,26 +541,27 @@ async def _run_agent_impl(
                         agent_run.all_messages(),
                         ttl=app_config.cachettl_agent_history,
                     )
+                    if coverage_meta is not None:
+                        await advance_prompt_coverage(chat_id, user_id, coverage_meta)
+                    log_run_cache_stats(use_model.model_name, agent_run.usage)
         finally:
-            if ctx is not None:
+            if ctx is not None and ctx_owned:
                 await ctx.__aexit__(None, None, None)
     except TypeError as e:
+        trace.mark_trace(session, status="error", error=e)
+        await _stop_typing_keepalive(typing_keepalive)
         # https://github.com/pydantic/pydantic-ai/issues/527
         # https://github.com/pydantic/pydantic-ai/issues/1813
         # https://github.com/pydantic/pydantic-ai/issues/1746
         logger.exception(f"Agent run error: {e}")
         err_text = i18n.t("bot.msg.agent.errors.too_fast", locale=lang)
-        if is_guest_mode:
-            await reply_output(client, message, f"{err_text}\n{e}", deps=deps)
-        else:
-            await message.reply_text(
-                f"{err_text}\n<code>{e}</code>",
-                parse_mode=pyrogram.enums.ParseMode.HTML,
-            )
+        await message.reply_text(err_text)
     except (
         pydantic_ai.exceptions.ModelHTTPError,
         pydantic_ai.exceptions.ModelAPIError,
     ) as e:
+        trace.mark_trace(session, status="error", error=e)
+        await _stop_typing_keepalive(typing_keepalive)
         logger.error(f"Agent HTTP error: {e.__class__.__name__}: {e}")
         markup = InlineKeyboardMarkup(
             [
@@ -399,12 +574,7 @@ async def _run_agent_impl(
             ]
         )
         status_code = getattr(e, "status_code", None)
-        if is_guest_mode:
-            base = i18n.t("bot.msg.agent.errors.interrupted", locale=lang).format(
-                error=f"{e.__class__.__name__}"
-            )
-            await reply_output(client, message, base, deps=deps)
-        elif status_code == 400:
+        if status_code == 400:
             await message.reply_text(
                 i18n.t("bot.msg.agent.errors.model_http_400", locale=lang),
                 reply_markup=markup,
@@ -418,16 +588,15 @@ async def _run_agent_impl(
         else:
             await message.reply_text(
                 i18n.t("bot.msg.agent.errors.interrupted", locale=lang).format(
-                    error=f"{e.__class__.__name__}"
+                    error="Error"
                 ),
                 reply_markup=markup,
             )
     except Exception as e:
+        trace.mark_trace(session, status="error", error=e)
+        await _stop_typing_keepalive(typing_keepalive)
         logger.error(f"Agent run error: {e.__class__.__name__} - {e}")
         err_text = i18n.t("bot.msg.agent.errors.interrupted", locale=lang).format(
-            error=f"{e.__class__.__name__}"
+            error="Error"
         )
-        if is_guest_mode:
-            await reply_output(client, message, err_text, deps=deps)
-        else:
-            await message.reply_text(err_text)
+        await message.reply_text(err_text)

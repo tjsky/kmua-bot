@@ -20,11 +20,10 @@ class ChatInfo(BaseModel):
 
 
 async def get_chat_info(ctx: RunContext[datatype.ContextDeps]) -> ChatInfo | None:
-    """Get chat(group) full infomation.
+    """Get full chat (group) information.
 
-    Returns:
-        ChatInfo object if session in a chat and chat exists in database,
-        None otherwise.
+    Returns a ChatInfo if the session is in a chat that exists in the
+    database, None otherwise.
     """
     chat_id = ctx.deps.chat_id
     chat_title = ""
@@ -45,16 +44,11 @@ async def get_chat_info(ctx: RunContext[datatype.ContextDeps]) -> ChatInfo | Non
         chat_title = chat_db.title
         chat_username = chat_db.username
         chat_config = chat_db.config
-    if ctx.deps.is_guest_mode:
-        return ChatInfo(
-            chat_id=chat_id,
-            title=chat_title,
-            username=chat_username,
-            config=chat_config,
-        )
     chat_full = await common.memttlcache.get(f"chatfull_{chat_id}", None)
     if not chat_full:
         chat_full = await ctx.deps.client.get_chat(chat_id)
+        if chat_full is None:
+            return None
         await common.memttlcache.set(
             f"chatfull_{chat_id}", chat_full, app_config.cachettl_chatfull
         )

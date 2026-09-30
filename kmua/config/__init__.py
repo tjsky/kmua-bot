@@ -16,6 +16,26 @@ class ProviderConfig(pydantic.BaseModel):
     - "chat_completions": OpenAI Chat Completions API (default, broadly compatible)
     - "responses": OpenAI Responses API (newer OpenAI-native API)
     """
+    api_type: str = "openai"
+    """Underlying API family used for embedding requests (and URL routing).
+
+    Supported values:
+    - "openai": OpenAI-compatible API (default; embed via ``/embeddings``)
+    - "ollama": Ollama native API (embeddings via ``/api/embed``; chat via
+      the OpenAI-compatible ``/v1/chat/completions`` endpoint).
+
+    For "ollama", ``url`` should be the Ollama server root (e.g.
+    ``http://localhost:11434``); a trailing ``/v1`` is stripped and re-added
+    where the OpenAI-compatible path is required. No API key is required
+    (``key`` is optional and sent as a bearer token when set).
+    """
+    proxy: str | None = None
+    """Optional HTTP proxy for requests to this provider.
+
+    Accepts any httpx proxy URL: ``http://``, ``https://`` or ``socks5://``.
+    Example: ``http://127.0.0.1:7890`` or ``socks5://user:pass@127.0.0.1:1080``.
+    When unset, :attr:`_AppConfig.agent_proxy` is used as a fallback.
+    """
 
 
 class _AppConfig(pydantic.BaseModel):
@@ -39,9 +59,45 @@ class _AppConfig(pydantic.BaseModel):
     nickname: str = "kmua"
 
     # health check server for container monitoring
+    #
+    # Deprecated: these fields are kept as aliases for the `webapp_*` settings
+    # below. The HTTP server is now provided by `kmua.webapp` (FastAPI), which
+    # serves /health and /ready with identical semantics. When `webapp_host` /
+    # `webapp_port` are left at their defaults, these values are used instead.
     health_check_enabled: bool = False
-    health_check_host: str = "localhost"
-    health_check_port: int = 8180
+
+    # Telegram Mini App management panel.
+    #
+    # The panel and the health check endpoints share a single FastAPI app on a
+    # single port. When `webapp` is false only /health and /ready are served, so
+    # container health checks keep working with the panel disabled.
+    webapp: bool = False
+    webapp_host: str = "0.0.0.0"
+    webapp_port: int = 8180
+    # Public HTTPS base URL of the panel. Required when `webapp` is enabled:
+    # Telegram refuses to open Mini Apps over plain HTTP.
+    webapp_url: str = ""
+    # Mini App short name registered via BotFather (/newapp). Used to build the
+    # direct link that carries group context: t.me/<bot>/<short_name>?startapp=...
+    webapp_short_name: str = "panel"
+    # Set the chat menu button to open the panel.
+    webapp_menu_button: bool = True
+    # HS256 secret for session tokens. Derived from the bot token when empty.
+    webapp_jwt_secret: str = ""
+    webapp_jwt_ttl: int = 21600  # 6 hours
+    # Max age of Telegram initData, in seconds. Guards against replay.
+    webapp_initdata_ttl: int = 300
+    # CORS origins. Empty means same-origin only; only set this for local dev.
+    webapp_allow_origins: list[str] = []
+    # Addresses whose X-Forwarded-For header is trusted, for rate limiting and logs.
+    # Defaults to loopback, which is right when the reverse proxy runs on the same
+    # host. Widen it only for the proxy's actual address: trusting "*" while the
+    # port is reachable directly lets any client forge its way past the limiter.
+    webapp_trusted_proxies: list[str] = ["127.0.0.1", "::1"]
+    # Static asset directory. Defaults to kmua/webapp/dist when empty.
+    webapp_static_dir: str = ""
+    # Master switch for editing user records from the developer panel.
+    webapp_admin_edit_user: bool = True
 
     # event loop lag monitor: detects when the single asyncio event loop is
     # blocked (the root cause of "bot freezes, no logs, no response"). When the
@@ -51,6 +107,9 @@ class _AppConfig(pydantic.BaseModel):
     loop_monitor_enabled: bool = True
     loop_monitor_interval: float = 1.0  # how often to sample lag (seconds)
     loop_monitor_threshold: float = 1.0  # warn when lag exceeds this (seconds)
+    # While the loop stays frozen longer than this, faulthandler writes native
+    # all-thread stacks to stderr every N seconds. 0 disables.
+    loop_monitor_native_dump_timeout: float = 10.0
 
     # Telegram session health monitor: periodically probes the main session
     # with a lightweight API call; if it fails repeatedly (zombie session),
@@ -62,9 +121,20 @@ class _AppConfig(pydantic.BaseModel):
     session_health_timeout: float = 15.0  # probe invoke timeout
     session_health_threshold: int = 3  # consecutive failures before restart
     session_health_cooldown: float = 60.0  # min seconds between restarts
+    # Hard cap for a forced session.restart(); a hung restart (kurigram can
+    # block inside stop() on its single crypto thread) must not block the
+    # monitor forever.
+    session_health_restart_timeout: float = 90.0
     # If no update arrives within this many seconds, the recv path is
     # considered dead (half-open TCP) and a restart is forced.
     session_health_stale: float = 300.0
+    # Hard bound (seconds) for one job on a session's crypto executor
+    # (pack/unpack/encrypt/decrypt). kurigram awaits those with no timeout:
+    # when the queue backs up, a handler stuck on one of them freezes the
+    # dispatcher and the session goes deaf while the process stays alive.
+    # Timeouts surface as TimeoutError (an OSError subclass), which triggers
+    # kurigram's own recovery (ping failure -> session restart).
+    session_crypto_timeout: float = 15.0
 
     # external services
     redis: bool = False
@@ -115,8 +185,17 @@ class _AppConfig(pydantic.BaseModel):
     # agent
     agent: bool = False
     agent_group_context_nearby_message_count: int = 0
-    agent_reflection_post_interval: int = 86400 * 3
     agent_follow_up: bool = True
+    # 实验性: 接话判断改用 jev(System One 决策模型, 只输出概率不生成文本)。
+    # 值为 "provider/model" 形式的 spec, provider 的 url 指向 System One 基址:
+    #   agent_followup_jev_model = "typesafe/jev-latest"
+    #   [agent_providers.typesafe]
+    #   url = "https://api.typesafe.ai/v1"
+    #   key = "..."
+    # 留空则仍用 agent_model_small, per-chat 小模型覆盖只对该路径生效。
+    agent_followup_jev_model: str | None = None
+    # jev 相关性概率阈值(0-1): noul 达到该值才认为新消息在延续话题, 越接近 1 越保守。
+    agent_followup_jev_threshold: float = pydantic.Field(default=0.5, ge=0.0, le=1.0)
     agent_cross_group_memory: bool = False
     agent_group_memory: bool = True
     agent_powermem_config_path: str | None = None
@@ -129,26 +208,100 @@ class _AppConfig(pydantic.BaseModel):
     #   url = "https://api.openai.com/v1"
     #   api_key = "sk-..."
     #   [agent_providers.local]
-    #   url = "http://localhost:11434/v1"
+    #   url = "http://localhost:11434"
     #   api_key = "ollama"
+    #   api_type = "ollama"   # native Ollama API for embeddings
     agent_providers: dict[str, ProviderConfig] = {"default": ProviderConfig()}
+    # Global proxy for all agent model requests (fallback for providers without
+    # an explicit ``proxy``). Accepts the same URL forms as
+    # ``ProviderConfig.proxy``. Example: ``http://127.0.0.1:7890``.
+    agent_proxy: str | None = None
     # Model specs use the format "provider/model_name" or just "model_name"
     # (bare name uses the "default" provider).
     agent_model: str | None = "default/gpt-4.1"
     agent_model_multimodal: str | None = None  # falls back to agent_model if unset
     agent_model_small: str | None = None  # falls back to agent_model if unset
     agent_struct_model: str | None = None
-    agent_messages_threshold: int = 20
-    agent_context_window_tokens: int = 0
+    # Per-model pydantic-ai ModelSettings overrides: temperature, top_p,
+    # max_tokens, thinking (minimal/low/medium/high/xhigh), openai_reasoning_effort,
+    # extra_body for provider-native params, ... Empty dict = model defaults.
+    # Keys are forwarded verbatim as ModelSettings; unknown keys are ignored.
+    agent_model_options: dict[str, Any] = {}
+    agent_model_multimodal_options: dict[str, Any] = {}
+    agent_model_small_options: dict[str, Any] = {}
+    agent_struct_model_options: dict[str, Any] = {}
+    # Conversation compaction: cheap passes first (clear old tool results),
+    # an LLM summary only if the history still does not fit. The threshold is
+    # the model's context window times the trigger ratio; 0 window disables
+    # compaction.
+    agent_context_window_tokens: int = 128_000
     agent_context_compress_ratio: float = 0.8
-    # Layered compression: number of recent messages to keep fully intact
-    agent_compression_recent_keep: int = 6
-    # Whether to compress tool return content (truncates long outputs)
-    agent_compression_compress_tool_returns: bool = True
-    # Max length for compressed tool return content
-    agent_compression_tool_return_max_length: int = 200
+    agent_compaction_keep_messages: int = 20
+    agent_compaction_clear_tool_results: bool = True
+    agent_compaction_keep_pairs: int = 3
+    agent_compaction_summarize: bool = True
+    # Single-part clamp threshold as a fraction of the context window; scales
+    # with the window so the guard stays correct when the model changes.
+    agent_clamp_max_part_ratio: float = 0.4
+    # Instruction for the in-place summary call (runs on the conversation's
+    # own model and system prompt; only this wording is customizable).
+    agent_compaction_summary_instruction: str = (
+        "Summarize the conversation above into a structured handoff summary "
+        "for continuing the conversation later.\n"
+        "IMPORTANT: If the conversation ends with an unanswered question or a "
+        "request awaiting the user's response, you MUST preserve that exact "
+        "question/request.\n"
+        "Use this format (omit sections that are not applicable):\n"
+        "## Goal\n"
+        "[What the user wants; list multiple if the conversation covers "
+        "different topics]\n"
+        "## Constraints & Preferences\n"
+        "- [Constraints or preferences the user stated]\n"
+        "## Progress\n"
+        "### Done\n"
+        "- [x] [Completed items]\n"
+        "### In Progress\n"
+        "- [ ] [Current work]\n"
+        "### Blocked\n"
+        "- [Issues preventing progress]\n"
+        "## Key Decisions\n"
+        "- **[Decision]**: [Brief rationale]\n"
+        "## Next Steps\n"
+        "1. [Ordered next actions]\n"
+        "## Critical Context\n"
+        "- [Important data, pending questions, references; keep who said "
+        "what, with sender names and ids exactly as labeled - never merge "
+        "two speakers' words]\n"
+        "## Additional Notes\n"
+        "[Anything else important, including how the user addresses you]\n"
+        "Output ONLY the structured summary; NEVER continue the "
+        "conversation, NEVER respond to questions in it. Keep sections "
+        "concise. Preserve exact names, ids, dates, links, preferences, and "
+        "distinctive phrasing. Write in the same language as the "
+        "conversation."
+    )
     agent_multimodal: bool = True
+    # Whether the struct model (channel comments, memory extraction) accepts
+    # multimodal input. Comment posts with media the model cannot take are
+    # silently skipped instead of being commented without the media.
+    agent_struct_model_multimodal: bool = False
     agent_streaming: bool = True
+    # Whether agent replies are sent as Bot API rich messages (headings,
+    # tables, formulas, task lists, details, inline media) instead of plain
+    # text with entities. Falls back to entities when a rich send fails.
+    agent_rich_output: bool = True
+    # Multimodal handling mode: "route" switches the run (and, once media is
+    # in history, every later run) to the multimodal model; "transcribe"
+    # has the multimodal model describe the current message's media as text
+    # and keeps the main model for the actual run - history stores only the
+    # transcription, so later requests stay on the main model.
+    agent_multimodal_mode: str = "route"
+    # Instructions for the transcription run in transcribe mode.
+    agent_multimodal_transcribe_prompt: str = (
+        "用户发送了多媒体内容(图片/音频/视频/文档)。请仔细查看并转述其中"
+        "包含的所有关键信息, 供另一个无法查看媒体的模型理解。只输出转述"
+        "内容本身, 不要额外寒暄或解释。"
+    )
     agent_multimodal_inputs: list[str] = [
         "photo",
         # "video",
@@ -156,22 +309,30 @@ class _AppConfig(pydantic.BaseModel):
     ]
     # Max multimodal items (images/video/binary) across user_prompt + history sent to model.
     # Oldest history items are stripped first when the total exceeds this limit.
-    # 0 = no limit.
-    agent_multimodal_max_items: int = 4
+    # 0 = no limit. 大部分'原生多模态'的模型无此限制
+    agent_multimodal_max_items: int = 0
+    # 每次 user prompt 中最多发送的多模态内容, 0 = no limit
+    agent_multimodal_input_count: int = 2
     agent_extra_tools: list[str] = ["websearch", "webfetch"]
     # crawl4ai API server for JS-rendered pages (e.g. docker run crawl4ai)
     # if not set, js=True requests will return an error
     agent_crawl_api_url: str | None = None
+    # crawl4ai >= 0.9 serves an authenticated API: the server must run with
+    # CRAWL4AI_API_TOKEN and this must carry the same value. Without a token the
+    # server binds its own container loopback, and a published port then accepts
+    # and resets every request.
     agent_crawl_api_token: str | None = None
     agent_crawl_api_timeout: int = 60
-    # Agent model call timeouts (seconds) - 0 means no timeout
-    agent_model_timeout: int = 0  # Main model timeout (0 = no timeout)
+    agent_model_timeout: int = 120  # Main model timeout (0 = no timeout)
     agent_small_model_timeout: int = 10  # Small model timeout for quick tasks
     agent_download_timeout: int = 30  # Download media timeout (0 = no timeout)
     # Overall wall-clock timeout for a single agent run (the whole iter loop,
     # including all tool calls and streaming). Prevents a stuck model/tool call
     # from blocking a dispatcher worker indefinitely. 0 = no timeout.
-    agent_run_timeout: int = 180
+    agent_run_timeout: int = 600
+    # Max seconds a streaming reply keeps editing its message before the bot
+    # stops updating it (the final text is still delivered).
+    agent_streaming_max_time: int = 300
     # Timeout for a single webfetch (_fetch_http via crawl4ai). 0 = no timeout.
     agent_webfetch_timeout: int = 45
     # Image generation/editing: "provider/model" spec.
@@ -182,6 +343,9 @@ class _AppConfig(pydantic.BaseModel):
     # Sticker semantic memory
     agent_sticker_memory: bool = False
     agent_sticker_memory_sample_rate: float = 0.5
+    # 入库冷启动: 采样率随聊天已存贴纸数在此目标以下线性放大到 1.0, 加快冷启动群的库填充
+    # None 或 <=0 关闭该行为 (恒用 agent_sticker_memory_sample_rate, 且不设工具显示的库存门槛)
+    agent_sticker_warmup_count: int | None = 30
     agent_sticker_db_path: str = "data/sticker_vec.db"
     agent_sticker_ttl: int = 86400 * 7
     agent_sticker_min_keep_count: int = 100  # 少于此数量时不逐出过期贴纸
@@ -206,15 +370,89 @@ class _AppConfig(pydantic.BaseModel):
     # Example: ["*.md", "docs/**/*", "tests/**/*"]
     agent_code_exclude_patterns: list[str] = []
 
+    # Agent workspace: sandboxed files the agent can write and send as documents
+    agent_workspace_enabled: bool = True
+    # Local session files (shell sandbox dirs, workspace databases) not
+    # touched for this many days are removed by the daily cleanup job; 0
+    # disables the sweep. Persisted files (Telegram-backed) are exempt.
+    agent_workspace_retention_days: int = 30
+
+    # Agent shell: run commands in a landlock sandbox (landrun).
+    # The shell works in a per-session real directory; files are moved in and
+    # out via work:// references by trusted bot code. Disabled by default.
+    agent_shell_enabled: bool = False
+    agent_shell_timeout: int = 30
+    agent_shell_concurrency: int = 2
+    # Chats where the shell tool is available; empty = not available anywhere.
+    # Private chats use their positive user id, groups their negative id, so
+    # one list covers both. Still gated by agent_shell_enabled and the global
+    # agent whitelist.
+    agent_shell_allowed_chats: list[int] = []
+    # Outbound TCP ports allowed from the sandbox; empty = no network.
+    agent_shell_network_ports: list[int] = [80, 443]
+    # Mount the bot's own virtualenv read-only into the sandbox and prepend
+    # its bin/ to PATH, so scripts can import the exact dependencies the bot
+    # runs on. Always read-only; sensitive environment variables are stripped
+    # from sandbox processes regardless of this switch.
+    agent_shell_venv_access: bool = True
+    # Max bytes one download reference may fetch: Telegram media
+    # (chat://media, t.me links) and direct https file links alike.
+    # work:// targets are additionally capped by the 5 MB workspace limit.
+    agent_download_max_bytes: int = 20_000_000
+    agent_landrun_path: str = "/usr/local/bin/landrun"
+
+    # Master switch for channel comments (the per-chat ai_comment setting
+    # still applies on top).
+    agent_channel_comment_enabled: bool = True
+    # Private chats: the user must have joined this channel before the agent
+    # responds. Accepts "@username", a bare username or a numeric chat id;
+    # None disables the gate.
+    agent_private_chat_required_channel: str | None = None
     # experimental, maybe removed in the future
     agent_whitelist_mode: bool = False
     agent_whitelist: list[int] = []
     agent_channel_comment_prompt: str = "评论这条频道的帖子"
+
+    # Mask credentials (API keys, tokens, private keys) out of tool returns
+    # and agent replies before they reach the model or the chat. User input
+    # is deliberately left untouched.
+    agent_secret_masking: bool = True
+    # Tool returns over this many characters are reduced before they persist
+    # in history (re-sent on every later model request otherwise). 0 disables.
+    agent_tool_output_limit: int = 10_000
+    # Character budget for the reduced tool return (head+tail clamp), used as
+    # the fallback when spill mode cannot write.
+    agent_tool_output_max_chars: int = 4_000
+    # Spill mode (default): the full payload is persisted to a local store and
+    # the model gets a read_tool_result handle to page/search the original
+    # losslessly; truncation only kicks in if the store write fails. False =
+    # pure truncation, no read-back.
+    agent_tool_output_spill: bool = True
+    # Per-run usage ceilings for the main agent (pydantic-ai UsageLimits).
+    # 0 (the default) disables an individual limit; set a value only when a
+    # runaway task must be hard-cut. Note that the request limit binds before
+    # the tool-call budget does.
+    agent_usage_request_limit: int | None = None
+    agent_usage_tool_calls_limit: int = 0
+    agent_usage_total_tokens_limit: int = 0
+    # 每个用户每天的免费 agent 用量, 单位是 token (输入 + 输出), 跨群共享, 按 UTC 日重置。
+    agent_quota_free_daily_tokens: int = 100_000
+    # 每个群每天的免费 agent 用量, 单位是 token, 按 UTC 日重置, 群内共享: 成员的个人免费
+    # 额度用尽后从群额度扣。群策略里自己设了正数就按群里的; 0 = 没有全局默认, 群不分配额度。
+    agent_quota_chat_free_daily_tokens: int = 0
+    # Record every agent run and its steps (model requests and responses, tool
+    # calls and results) and expose them read-only in the panel. Off means no
+    # session is created and no row is written; the switch is read per run.
+    agent_trace_enabled: bool = True
+    # Days a recorded run is kept; the daily cleanup job deletes older ones.
+    # 0 or less keeps everything.
+    agent_trace_retention_days: int = 30
+    # Hard cap on one stored string (a message text, a tool result, the final
+    # output). Longer values are cut and the event is marked as truncated.
+    agent_trace_max_field_chars: int = 64_000
     ############################################################################
     agent_prompt: str = """"""
     agent_group_prompt: str = """"""
-    ############################################################################
-    agent_summary_prompt: str = """"""
     ############################################################################
     agent_memory_prompt: str = """"""
     agent_affection_prompts: dict[str, str] = {}
@@ -226,6 +464,15 @@ class _AppConfig(pydantic.BaseModel):
     cachedir: Path = workdir / "cache"
     avatar_cache_dir: Path = cachedir / "avatar"
     avatar_expire: int = 60 * 60 * 24  # 1 day
+    # Cap concurrent avatar network refreshes (get_chat + download_media), so a
+    # burst of cache misses (quote/waifu hot paths) cannot flood the Telegram
+    # session with parallel file downloads.
+    avatar_refresh_concurrency: int = 3
+    # Hard timeout for one avatar refresh. Failures are remembered for
+    # avatar_refresh_retry_after seconds so hot paths fall back to the cached/
+    # default avatar instead of retrying a dead session on every call.
+    avatar_refresh_timeout: float = 30.0
+    avatar_refresh_retry_after: float = 10 * 60
 
     # coin cost
     cost_user_change_waifu_base: int = 16
@@ -248,6 +495,23 @@ class _AppConfig(pydantic.BaseModel):
     coin_daily_add_interval: int = 86400
     # 每次奖励的数量
     coin_daily_add_count: int = 144 * 16
+
+    # RSS subscription push.
+    #
+    # Whitelist mode is ON by default: polling arbitrary URLs on a chat's behalf is an
+    # outbound-request grant, so a chat needs an explicit `rss_allowed` policy row
+    # (set by an owner in the panel) before it can subscribe. Turning this off lets
+    # every chat subscribe.
+    rss_enabled: bool = True
+    rss_whitelist_mode: bool = True
+    # Minutes between polls of every active feed.
+    rss_interval: int = pydantic.Field(default=30, ge=1, le=1440)
+    # Minimum minutes between agent broadcasts to one chat (per-chat switch:
+    # ChatConfig.rss_agent_broadcast).
+    rss_agent_broadcast_interval: int = pydantic.Field(default=30, ge=1, le=1440)
+    # FxEmbed-compatible API base for native Twitter/X parsing
+    # (default: public FxTwitter instance; self-hosted workers can replace it).
+    fxembed_api_url: str = "https://api.fxtwitter.com"
 
 
 class _InternalConfig(pydantic.BaseModel):
@@ -272,16 +536,68 @@ def _get_typed_config[T: pydantic.BaseModel](
     return config_class(**config_dict)
 
 
+def _resolve_settings_files() -> list[str]:
+    """Return the settings files to load, as absolute paths, in load order.
+
+    Dynaconf resolves relative names with `inspect.stack()`, which walks the whole
+    interpreter stack building a frame info per frame (source files included) for
+    each candidate name. On a cold container that costs seconds of source reads,
+    and the result is a directory guess this project already knows: the package
+    root (`/kmua` in the image, the checkout when running from source) and the
+    working directory, each optionally with a `config/` subdirectory.
+    """
+    roots = [Path(__file__).resolve().parent.parent.parent, Path.cwd()]
+    resolved: list[str] = []
+    for name in ("settings.toml", "settings.dev.toml"):
+        for root in roots:
+            candidates = (root / name, root / "config" / name)
+            found = next((path for path in candidates if path.is_file()), None)
+            if found is not None:
+                resolved.append(str(found))
+                break
+    return resolved
+
+
 _settings = Dynaconf(
     envvar_prefix="KMUA",
-    settings_files=[
-        "settings.toml",
-        "settings.dev.toml",
-    ],
+    settings_files=_resolve_settings_files(),
     environments=False,
 )
 
+_LEGACY_HEALTH_ALIASES = {
+    "webapp_host": "health_check_host",
+    "webapp_port": "health_check_port",
+}
+"""Deprecated `health_check_*` keys mapped to the `webapp_*` keys replacing them."""
+
+_legacy_health_keys_used: list[str] = []
+
+
+def _apply_legacy_health_aliases(
+    config: _AppConfig, settings_obj: Any = None
+) -> list[str]:
+    """Let deprecated `health_check_*` settings feed the new `webapp_*` fields.
+
+    A deprecated key only wins when the user has not set the replacement key, so
+    an explicit `webapp_port` always takes precedence. Returns the deprecated
+    keys that were actually applied, so the caller can warn about them once.
+    """
+    if settings_obj is None:
+        settings_obj = _settings
+
+    applied: list[str] = []
+    for new_field, legacy_field in _LEGACY_HEALTH_ALIASES.items():
+        if settings_obj.exists(new_field):
+            continue
+        if not settings_obj.exists(legacy_field):
+            continue
+        setattr(config, new_field, getattr(config, legacy_field))
+        applied.append(legacy_field)
+    return applied
+
+
 app_config = _get_typed_config(_AppConfig)
+_legacy_health_keys_used = _apply_legacy_health_aliases(app_config)
 
 if app_config.agent and app_config.agent_powermem_config_path:
     try:
@@ -325,9 +641,19 @@ def reload_config() -> tuple[bool, str, list[str]]:
     try:
         _settings.reload()
         new_config = _get_typed_config(_AppConfig)
+        _apply_legacy_health_aliases(new_config)
 
         # Validate critical fields haven't changed
-        critical_fields = ["token", "db_url", "api_id", "api_hash", "session_name"]
+        critical_fields = [
+            "token",
+            "db_url",
+            "api_id",
+            "api_hash",
+            "session_name",
+            # Rebinding the HTTP listener needs a restart.
+            "webapp_host",
+            "webapp_port",
+        ]
         for field in critical_fields:
             if getattr(new_config, field) != getattr(app_config, field):
                 return False, f"Cannot reload: {field} changed (requires restart)", []

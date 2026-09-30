@@ -8,6 +8,7 @@ import pyrogram
 from pyrogram.client import Client as PyrogramClient
 
 from kmua import common, database, i18n
+from kmua.common.utils import GROUP_CHAT_TYPES
 from kmua.config import app_config
 from kmua.logger import logger
 from kmua.services import aniobjcut
@@ -41,21 +42,25 @@ async def parse_artwork(client: PyrogramClient, message: pyrogram.types.Message)
         return
     if not chat or not chat.type or not chat.id:
         return
-    if chat.type in (pyrogram.enums.ChatType.SUPERGROUP, pyrogram.enums.ChatType.GROUP):
+    if not message.matches or not message.text:
+        return
+    artwork_url = message.matches[0].group()
+    if not artwork_url:
+        return
+    is_group = chat.type in GROUP_CHAT_TYPES
+    if is_group:
         chat_config = await database.get_chat_config(chat.id)
-        if not chat_config.parse_artwork_enabled:
+        if not chat_config.parse_links_enabled or not chat_config.parse_artwork_enabled:
+            return
+        site = manyacg_service.match_artwork_site(artwork_url)
+        if site and not chat_config.parse_sites_enabled.get(
+            site, chat_config.parse_artwork_enabled
+        ):
             return
         lang = chat_config.lang
     else:
         user_config = await database.get_user_config(user.id)
         lang = user_config.lang
-    if not message.matches:
-        return
-    if not message.text:
-        return
-    artwork_url = message.matches[0].group()
-    if not artwork_url:
-        return
     await message.reply_chat_action(pyrogram.enums.ChatAction.UPLOAD_PHOTO)
     if not artwork_url.startswith("http"):
         artwork_url = "https://" + artwork_url
@@ -153,7 +158,7 @@ async def setu_command(client: PyrogramClient, message: pyrogram.types.Message):
         return
     if not chat or not chat.type or not chat.id:
         return
-    if chat.type in (pyrogram.enums.ChatType.SUPERGROUP, pyrogram.enums.ChatType.GROUP):
+    if chat.type in GROUP_CHAT_TYPES:
         chat_config = await database.get_chat_config(chat.id)
         if not chat_config.setu_enabled:
             await message.reply(
@@ -226,7 +231,7 @@ async def randavatar_command(client: PyrogramClient, message: pyrogram.types.Mes
         return
     if not chat or not chat.type or not chat.id:
         return
-    if chat.type in (pyrogram.enums.ChatType.SUPERGROUP, pyrogram.enums.ChatType.GROUP):
+    if chat.type in GROUP_CHAT_TYPES:
         chat_config = await database.get_chat_config(chat.id)
         if not chat_config.setu_enabled:
             await message.reply(

@@ -17,8 +17,10 @@ bot:
     pickbottle: 捡一个漂流瓶
     wordcloud: 生成聊天记录词云
     config: 更改群组设置
+    panel: 在管理面板中配置本群
     greet: 设置群组欢迎语
     forget: 让 bot 忘记与你的对话记录
+    quota: 查看 AI 使用额度
     f5avatar: 刷新头像
     buygift: 购买礼物
     gift: 送礼物给 Bot
@@ -29,3 +31,4 @@ bot:
     randmyavatar: 立刻更换 bot 头像
     reload: 重载配置文件
     infographic: 渲染信息图
+    rss: 管理 RSS 订阅

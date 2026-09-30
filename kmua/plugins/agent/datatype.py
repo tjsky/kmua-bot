@@ -1,11 +1,14 @@
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import TYPE_CHECKING, Any
 
-from powermem import AsyncMemory
 from pydantic import BaseModel, Field
 from pydantic_ai import ModelMessage
 from pyrogram.client import Client as PyrogramClient
 from pyrogram.types import Message
+
+if TYPE_CHECKING:
+    from powermem import AsyncMemory
 
 
 class ChatMemoryy(BaseModel):
@@ -60,7 +63,7 @@ class AffectionChangeAmplitude(StrEnum):
     LARGE = "large"
 
 
-# fuck pydantic-ai: https://github.com/pydantic/pydantic-ai/issues/607
+# nested models fail ollama validation: https://github.com/pydantic/pydantic-ai/issues/607
 
 
 class UserMemoryResult(BaseModel):
@@ -130,7 +133,7 @@ class UserMemoryResult(BaseModel):
 
 
 class EndTurn(BaseModel):
-    reason: str = Field(description="结束原因")
+    reason: str | None
 
 
 @dataclass
@@ -147,14 +150,10 @@ class ContextDeps:
     chat_id: int
     message: Message
     instructions: str = ""
-    powermemory: AsyncMemory | None = None
+    powermemory: "AsyncMemory | None" = None
+    multimodal_model: Any | None = None
     history: list[ModelMessage] = field(default_factory=list)
     tools_called_this_turn: set[str] = field(default_factory=set)
-    guest_replied: bool = False
-
-    @property
-    def is_guest_mode(self) -> bool:
-        return bool(self.message.guest_query_id)
 
 
 @dataclass
@@ -168,51 +167,39 @@ class UserData:
 @dataclass
 class ContextInfo:
     user_data: UserData | None = None
-    msg_id: int | None = None
-    current_time: str | None = None
-    chat_type: str | None = None
-    reply_to_msg_text: str | None = None
-    reply_to_msg_id: int | None = None
     memory_about_user: ChatMemoryy | None = None
     append_prompt: str | None = None
     is_group_chat: bool = False
 
     def to_text(self) -> str:
+        """The per-turn instruction block for additional_instructions: user
+        profile, memory about the user, affection prompt. Time/msg/chat/reply
+        metadata deliberately live in the per-message prompt blocks instead."""
         parts = []
-        if self.user_data:
-            parts.append(
-                f"用户信息: 姓名: {self.user_data.full_name}, 用户名: {self.user_data.username or '无'}"
+        if self.user_data is not None:
+            username = (
+                f"@{self.user_data.username}" if self.user_data.username else "无"
             )
-        if self.msg_id:
-            parts.append(f"消息ID: {self.msg_id}")
-        if self.current_time:
-            parts.append(f"当前时间: {self.current_time}")
-        if self.chat_type:
-            parts.append(f"聊天类型: {self.chat_type}")
-        if self.reply_to_msg_text:
-            parts.append(f"回复的消息内容: {self.reply_to_msg_text}")
-        if self.reply_to_msg_id:
-            parts.append(f"回复的消息ID: {self.reply_to_msg_id}")
-        if self.memory_about_user:
             parts.append(
-                f"关于用户的记忆: ({self.memory_about_user.to_text(is_group_chat=self.is_group_chat)})"
+                f"用户信息: 姓名: {self.user_data.full_name}, 用户名: {username}"
             )
-        if self.is_group_chat:
-            parts.append("群聊场景, 请注意收集上下文信息")
+        if self.memory_about_user is not None:
+            memory_text = self.memory_about_user.to_text(
+                is_group_chat=self.is_group_chat
+            )
+            if memory_text:
+                parts.append(f"关于用户的记忆: ({memory_text})")
         if self.append_prompt:
             parts.append(f"附加提示: {self.append_prompt}")
-        text = "\n".join(parts)
-        return f"ContextInfo[{text}]" if text else ""
+        return "\n".join(parts)
 
 
 @dataclass
 class BotLastReply:
-    """记录bot最近的回复信息"""
-
     message_id: int
     reply_to_user_id: int
     reply_to_message_id: int
     reply_text: str
     timestamp: float
-    original_user_message: str = ""  # 原始用户消息文本
-    full_output: str = ""  # 模型的完整输出内容（可能分割成多条消息发送）
+    original_user_message: str = ""
+    full_output: str = ""  # 可能分割成多条消息发送

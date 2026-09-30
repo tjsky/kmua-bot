@@ -4,12 +4,13 @@ from urllib.parse import urlparse
 
 import httpx
 import idna
-from pyrogram import Client, filters
-from pyrogram.enums import ChatType, ParseMode
+from pyrogram import filters
+from pyrogram.client import Client
+from pyrogram.enums import ParseMode
 from pyrogram.types import Message
 
 from kmua import common, database, i18n
-from kmua.common.utils import is_explicit_reply
+from kmua.common.utils import GROUP_CHAT_TYPES, is_explicit_reply
 from kmua.logger import logger
 
 
@@ -17,7 +18,9 @@ from kmua.logger import logger
 async def ipinfo(client: Client, message: Message):
     user = message.from_user or message.sender_chat
     chat = message.chat
-    in_group = chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
+    if not chat or chat.id is None or not user or user.id is None:
+        return
+    in_group = chat.type in GROUP_CHAT_TYPES
     if in_group:
         lang = (await database.get_chat_config(chat.id)).lang
     else:

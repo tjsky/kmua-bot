@@ -7,17 +7,25 @@ from pyrogram.client import Client as PyrogramClient
 
 from kmua import common, database, enums
 from kmua.common.memory_store import memttlcache
-from kmua.common.utils import is_explicit_reply
+from kmua.common.utils import GROUP_CHAT_TYPES, is_explicit_reply
 from kmua.config import app_config
 from kmua.logger import logger
-from kmua.plugins.agent import datatype, provider, state
+from kmua.plugins.agent import datatype, jev, provider, quota, state, trace
 from kmua.plugins.agent.prompt import build_ctx_info, get_input_prompt
 from kmua.plugins.agent.runner import (
     get_chat_model_override,
     run_agent,
 )
 
-from .agent import agent, model, multimodal_model, powermemory, small_model
+from .agent import (
+    _queue_interjection,
+    _run_registered,
+    agent,
+    model,
+    multimodal_model,
+    powermemory,
+    small_model,
+)
 from .tools import block as tools
 from .whitelist import is_chat_allowed
 
@@ -30,8 +38,12 @@ class RelevanceCheck(BaseModel):
 if small_model:
     _default_relevance_check_agent = Agent(
         model=small_model or model,
+        model_settings=provider.make_model_settings(
+            app_config.agent_model_small_options
+        ),
         output_type=RelevanceCheck,
         system_prompt="你是一个对话相关性判断助手。判断用户的新消息是否是对之前对话的延续。",
+        capabilities=[trace.AgentTraceCapability()],
         retries=2,
     )
 else:
@@ -41,13 +53,17 @@ else:
 def _make_relevance_check_agent(
     override_model_spec: str | None,
 ) -> Agent[None, RelevanceCheck] | None:
-    """Return a relevance-check agent using the per-chat small model override if set,
-    otherwise fall back to the module-level default (which uses the global small_model)."""
+    """Relevance-check agent using the per-chat small model override when set,
+    else the module-level default (which uses the global small_model)."""
     if override_model_spec:
         return Agent(
             model=provider.make_chat_model(override_model_spec),
+            model_settings=provider.make_model_settings(
+                app_config.agent_model_small_options
+            ),
             output_type=RelevanceCheck,
             system_prompt="你是一个对话相关性判断助手。判断用户的新消息是否是对之前对话的延续。",
+            capabilities=[trace.AgentTraceCapability()],
             retries=2,
         )
     return _default_relevance_check_agent
@@ -58,15 +74,12 @@ async def _follow_up_filter_func(
 ) -> bool:
     if not app_config.agent or not app_config.agent_follow_up:
         return False
-    if not _default_relevance_check_agent:
+    if not _default_relevance_check_agent and not app_config.agent_followup_jev_model:
         return False
     if not message or not message.chat:
         return False
     chat = message.chat
-    if chat.type not in (
-        pyrogram.enums.ChatType.SUPERGROUP,
-        pyrogram.enums.ChatType.GROUP,
-    ):
+    if chat.type not in GROUP_CHAT_TYPES:
         return False
     if not chat.id:
         return False
@@ -109,7 +122,20 @@ async def _follow_up_filter_func(
         )
         if has_mention:
             return False
-    if await common.memstore.get(state.waiting_key(user.id)):
+    if chat is not None and chat.id is not None and state.is_running(chat.id, user.id):
+        # Mid-turn: the message is an interjection, not a follow-up trigger.
+        # Deliver it straight into the live run (budget-checked), so the
+        # running turn picks it up on its next model request.
+        text = (message.text or message.caption or "").strip()
+        if not text:
+            return False
+        if app_config.nickname and app_config.nickname in text:
+            return False
+        if not state.enqueue_interjection(chat.id, user.id, text):
+            logger.warning(
+                f"Follow-up interjection dropped for user {user.id} in "
+                f"chat {chat.id}: interjection budget exhausted"
+            )
         return False
     return True
 
@@ -151,13 +177,23 @@ async def handle_follow_up_message(
     chat_config = await database.get_chat_config(chat.id)
     if not chat_config.ai_reply:
         return
+    subject = quota.subject_of(message)
+    if not await quota.can_start(subject):
+        # 额度没了就不做相关性判断: 那本身就是一次模型调用。
+        await trace.note_rejection(
+            "followup",
+            chat_id=chat.id,
+            user_id=user.id,
+            message_id=message.id,
+            reason="quota",
+        )
+        return
     user_data = await database.get_user_by_id(user.id)
     if not user_data:
         return
     reply_to_user = await database.get_user_by_id(bot_reply.reply_to_user_id)
     if not reply_to_user:
         return
-    # 调用AI判断相关性
     message_text = message.text or message.caption
     # 使用 full_output（模型的完整输出）而不是 reply_text（可能只是最后一条消息）
     bot_full_output = (
@@ -175,41 +211,78 @@ Bot回复: {bot_full_output}
 - 即使是不同用户发送的消息也可能相关
 - 新消息与原先话题必须存在明显的关联性才算相关, 如果不能确定, 一律判定为不相关
 """
+    session: trace.TraceSession | None = None
     try:
-        small_model_override = await get_chat_model_override(chat.id, "small")
-        relevance_check_agent = _make_relevance_check_agent(small_model_override)
-        if not relevance_check_agent:
-            return
-
         # 使用小模型超时控制防止相关性检查阻塞事件循环
         timeout = app_config.agent_small_model_timeout
-        coro = relevance_check_agent.run(
-            user_prompt=relevance_check_prompt,
+        jev_model_spec = app_config.agent_followup_jev_model
+        if jev_model_spec:
+            # 实验性: jev 只输出概率不生成文本, 因而不走 pydantic-ai。
+            coro = jev.check_relevance(
+                relevance_check_prompt,
+                spec=jev_model_spec,
+                threshold=app_config.agent_followup_jev_threshold,
+                timeout=timeout if timeout > 0 else None,
+            )
+        else:
+            small_model_override = await get_chat_model_override(chat.id, "small")
+            relevance_check_agent = _make_relevance_check_agent(small_model_override)
+            if not relevance_check_agent:
+                return
+            coro = relevance_check_agent.run(
+                user_prompt=relevance_check_prompt,
+            )
+
+        session = await trace.start_trace(
+            "followup_relevance",
+            chat_id=chat.id,
+            user_id=user.id,
+            message_id=message.id,
+            model_role="small",
         )
+        if jev_model_spec:
+            trace.mark_trace(session, model_name=jev_model_spec)
 
         if timeout > 0:
             try:
                 relevance_result = await asyncio.wait_for(coro, timeout=timeout)
-            except TimeoutError:
+            except TimeoutError as e:
+                trace.mark_trace(session, status="timeout", error=e)
                 logger.warning(f"Follow-up relevance check timed out after {timeout}s")
                 return
         else:
             relevance_result = await coro
 
+        # 相关性判断本身就是一次模型调用, 跑完即刻按它的用量结算; 判为不相关也记 ——
+        # token 已经花掉了, 不记的话这段开销在面板上就看不见。
+        await quota.settle(subject, relevance_result.usage)
+        trace.mark_trace(
+            session,
+            usage=relevance_result.usage,
+            output=(
+                f"relevance={relevance_result.output.relevance} "  # type: ignore[union-attr]
+                f"reason={relevance_result.output.reason}"  # type: ignore[union-attr]
+            ),
+        )
         if not relevance_result.output.relevance:  # type: ignore[union-attr]
             return
     except Exception as e:
+        trace.mark_trace(session, status="error", error=e)
         logger.error(
             f"Error checking follow-up relevance: {e.__class__.__name__} - {e}"
         )
         return
+    finally:
+        trace.finish_trace(session)
     logger.info(
         f"Detected follow-up message {message.id} (reason: {relevance_result.output.reason})"  # type: ignore[union-attr]
     )
-    if await common.memstore.get(state.waiting_key(user.id)):
+    follow_lock = state.get_conversation_lock(chat.id, user.id)
+    if follow_lock.locked():
+        await _queue_interjection(message, chat.id, user.id)
         return
+    await follow_lock.acquire()
     try:
-        await common.memstore.set(state.waiting_key(user.id), True)
         await message.reply_chat_action(pyrogram.enums.ChatAction.TYPING)
         instructions = (
             app_config.agent_group_prompt
@@ -227,9 +300,9 @@ Bot回复: {bot_full_output}
             user=user,
             user_data=user_data,
             history=history,
-            is_group_chat=True,
+            is_group_chat=chat.type in GROUP_CHAT_TYPES,
         )
-        follow_up_prompt, _ = await get_input_prompt(
+        follow_up_prompt, _, _ = await get_input_prompt(
             client, message, include_nearby=0, ctx=None
         )
         addtional_instructions = ctx_info.to_text() if ctx_info else ""
@@ -244,27 +317,34 @@ Bot回复: {bot_full_output}
 ---
 现在又有用户[{user_data.full_name}]对这个话题继续讨论，请自然地参与对话。
 """
-        await run_agent(
-            agi=agent,
-            additional_instructions=addtional_instructions,
-            client=client,
-            message=message,
-            user_id=user.id,
-            chat_id=chat.id,
-            user_prompt=follow_up_prompt,
-            history=history,
-            deps=datatype.ContextDeps(
+        await _run_registered(
+            chat.id,
+            user.id,
+            run_agent(
+                agi=agent,
+                additional_instructions=addtional_instructions,
+                client=client,
+                message=message,
                 user_id=user.id,
                 chat_id=chat.id,
-                message=message,
-                client=client,
-                instructions=instructions,
-                powermemory=powermemory,
+                user_prompt=follow_up_prompt,
                 history=history,
+                deps=datatype.ContextDeps(
+                    user_id=user.id,
+                    chat_id=chat.id,
+                    message=message,
+                    client=client,
+                    instructions=instructions,
+                    powermemory=powermemory,
+                    history=history,
+                ),
+                multimodal_model=multimodal_model,
+                model=model,
+                lang=chat_config.lang,
+                subject=subject,
+                trace_kind="followup",
+                coverage_meta=state.PromptCoverage(last_message_id=message.id),
             ),
-            multimodal_model=multimodal_model,
-            model=model,
-            lang=chat_config.lang,
         )
 
     except Exception as e:
@@ -272,4 +352,4 @@ Bot回复: {bot_full_output}
             f"Error handling follow-up message: {e.__class__.__name__} - {e}"
         )
     finally:
-        await common.memstore.delete(state.waiting_key(user.id))
+        follow_lock.release()

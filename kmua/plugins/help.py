@@ -1,19 +1,20 @@
 import asyncio
 
 import pyrogram
+from pyrogram.client import Client
 
 from kmua import common, database, i18n
+from kmua.common.utils import GROUP_CHAT_TYPES
 
 
-@pyrogram.Client.on_message(pyrogram.filters.command("help"), group=0)
-async def help_command(client: pyrogram.Client, message: pyrogram.types.Message):
+@Client.on_message(pyrogram.filters.command("help"), group=0)
+async def help_command(client: Client, message: pyrogram.types.Message):
     """Handle the /help command."""
     chat = message.chat
     user = message.from_user
-    in_group = chat.type in (
-        pyrogram.enums.ChatType.GROUP,
-        pyrogram.enums.ChatType.SUPERGROUP,
-    )
+    if chat is None or chat.id is None or user is None:
+        return
+    in_group = chat.type in GROUP_CHAT_TYPES
     if in_group:
         lang = (await database.get_chat_config(chat.id)).lang
     else:

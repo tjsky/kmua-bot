@@ -1,5 +1,6 @@
 import datetime
 import html
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import pyrogram
@@ -13,6 +14,7 @@ from kmua.database.models import ChatData, UserData
 from kmua.logger import logger
 
 from .memory_store import memttlcache
+from .rich_message import message_plain_text
 
 
 def chat_message_cache_key(chat_id: int, message_id: int) -> str:
@@ -26,7 +28,9 @@ def chat_message_object_cache_key(chat_id: int, message_id: int) -> str:
 
 
 async def cache_message_object(message: pyrogram.types.Message) -> None:
-    """Cache a full message object for later retrieval."""
+    """Cache a full, non-deleted message object for later retrieval."""
+    if getattr(message, "empty", False):
+        return
     if not message.chat or not message.chat.id:
         return
 
@@ -34,8 +38,20 @@ async def cache_message_object(message: pyrogram.types.Message) -> None:
     message_id = message.id
     cache_key = chat_message_object_cache_key(chat_id, message_id)
     ttl = app_config.cachettl_message_object
-
     await memttlcache.set(cache_key, message, ttl=ttl)
+
+
+async def invalidate_cached_message_objects(
+    messages: Iterable[pyrogram.types.Message],
+) -> None:
+    """Remove message-object cache entries announced as deleted by Telegram."""
+    for message in messages:
+        chat = getattr(message, "chat", None)
+        chat_id = getattr(chat, "id", None)
+        message_id = getattr(message, "id", None)
+        if chat_id is None or not message_id:
+            continue
+        await memttlcache.delete(chat_message_object_cache_key(chat_id, message_id))
 
 
 async def get_cached_message_object(
@@ -57,7 +73,10 @@ async def get_cached_messages_objects(
         if msg_id in cached_messages:
             continue
         cached = await get_cached_message_object(chat_id, msg_id)
-        if cached:
+        if cached is not None and getattr(cached, "empty", False):
+            await memttlcache.delete(chat_message_object_cache_key(chat_id, msg_id))
+            cached = None
+        if cached is not None:
             cached_messages[msg_id] = cached
         else:
             to_fetch_ids.append(msg_id)
@@ -75,7 +94,7 @@ async def get_cached_messages_objects(
                 fetched = fetched or []
 
             for msg in fetched:
-                if msg:
+                if msg and not getattr(msg, "empty", False):
                     await cache_message_object(msg)
                     cached_messages[msg.id] = msg
         except Exception as e:
@@ -124,23 +143,28 @@ async def get_messages_with_cache(
         if isinstance(fetched, pyrogram.types.Message):
             fetched = [fetched]
         fetched_messages.extend(fetched or [])
-    history_messages = [
-        HistoryMessage(
-            message_id=msg.id,
-            chat_id=msg.chat.id if msg.chat and msg.chat.id else 0,
-            user_id=(
-                msg.sender_chat.id
-                if msg.sender_chat and msg.sender_chat.id is not None
-                else msg.from_user.id
-                if msg.from_user and msg.from_user.id is not None
-                else 0
-            ),
-            text=msg.text or msg.caption or "",
-            time=msg.date,
+    history_messages: list[HistoryMessage] = []
+    for msg in fetched_messages:
+        if not (msg.sender_chat or msg.from_user):
+            continue
+        text = message_plain_text(msg)
+        if not text:
+            continue
+        history_messages.append(
+            HistoryMessage(
+                message_id=msg.id,
+                chat_id=msg.chat.id if msg.chat and msg.chat.id else 0,
+                user_id=(
+                    msg.sender_chat.id
+                    if msg.sender_chat and msg.sender_chat.id is not None
+                    else msg.from_user.id
+                    if msg.from_user and msg.from_user.id is not None
+                    else 0
+                ),
+                text=text,
+                time=msg.date,
+            )
         )
-        for msg in fetched_messages
-        if (msg.sender_chat or msg.from_user) and (msg.text or msg.caption)
-    ]
     history_messages.extend(cached_messages.values())
     for msg in history_messages:
         await memttlcache.set(
@@ -215,25 +239,6 @@ def get_message_origin(
             case pyrogram.enums.MessageOriginType.CHAT:
                 return origin.sender_chat  # type: ignore
     return message.sender_chat or message.from_user
-
-
-async def get_chat_full(client: pyrogram.client.Client, chat_id: int) -> Chat:
-    """Get chat full info with cache
-
-    Arguments:
-        client -- pyrogram client
-        chat_id -- chat_id
-
-    Returns:
-        Chat
-    """
-    cache_key = f"chat_full:{chat_id}"
-    cached = await memttlcache.get(cache_key, None)
-    if cached and isinstance(cached, Chat):
-        return cached
-    chat = await client.get_chat(chat_id)
-    await memttlcache.set(cache_key, chat, ttl=3600)
-    return chat
 
 
 async def get_chat_member(

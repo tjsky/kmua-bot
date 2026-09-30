@@ -1,15 +1,23 @@
 import pyrogram
+from pyrogram.client import Client
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from kmua import common, database
 from kmua.database.models import ChatConfig
 from kmua.i18n import i18n
+from kmua.plugins.panel import chat_panel_button
 
 
 class ChatConfigMarkup:
-    def __init__(self, chat_config: ChatConfig, lang: str = "zh-CN"):
+    def __init__(
+        self,
+        chat_config: ChatConfig,
+        lang: str = "zh-CN",
+        chat_id: int | None = None,
+    ):
         self.chat_config = chat_config
         self.lang = lang
+        self.chat_id = chat_id
 
     def get_status_emoji(self, boolean: bool):
         if boolean:
@@ -86,20 +94,38 @@ class ChatConfigMarkup:
                 ],
                 [
                     InlineKeyboardButton(
+                        f"{i18n.t('bot.button.chat_config.verify', locale=self.lang)} {self.get_status_emoji(self.chat_config.verify_enabled)}",
+                        callback_data=self.get_callback_data("verify_enabled"),
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
                         i18n.t("bot.button.chat_config.save", locale=self.lang),
                         callback_data="config_chat save",
                     ),
                 ],
             ]
+            + self._panel_row()
         )
 
+    def _panel_row(self) -> list[list[InlineKeyboardButton]]:
+        """A deep link to this chat's page in the Mini App panel.
 
-@pyrogram.Client.on_message(
-    pyrogram.filters.command("config") & pyrogram.filters.group, group=0
-)
-async def config_chat_cmd(client: pyrogram.Client, message: pyrogram.types.Message):
+        Built by `plugins.panel`, which owns the link format and is also what
+        /panel replies with, so the two entry points cannot drift apart.
+        """
+        if self.chat_id is None:
+            return []
+        button = chat_panel_button(self.chat_id, self.lang)
+        return [[button]] if button else []
+
+
+@Client.on_message(pyrogram.filters.command("config") & pyrogram.filters.group, group=0)
+async def config_chat_cmd(client: Client, message: pyrogram.types.Message):
     user = message.sender_chat or message.from_user
     chat = message.chat
+    if not user or not chat:
+        return
     if not await common.can_user_manage_bot_in_chat(user, chat):
         chat_config = await database.get_chat_config(chat)
         lang = chat_config.lang
@@ -111,15 +137,16 @@ async def config_chat_cmd(client: pyrogram.Client, message: pyrogram.types.Messa
     lang = chat_config.lang
     await message.reply(
         text=i18n.t("bot.msg.group_config", locale=lang),
-        reply_markup=ChatConfigMarkup(chat_config, lang).build(),
+        reply_markup=ChatConfigMarkup(chat_config, lang, chat.id).build(),
     )
 
 
-@pyrogram.Client.on_callback_query(pyrogram.filters.regex("^config_chat"), group=0)
-async def config_chat(
-    client: pyrogram.Client, callback_query: pyrogram.types.CallbackQuery
-):
-    chat = callback_query.message.chat
+@Client.on_callback_query(pyrogram.filters.regex("^config_chat"), group=0)
+async def config_chat(client: Client, callback_query: pyrogram.types.CallbackQuery):
+    message = callback_query.message
+    if not message or not message.chat:
+        return
+    chat = message.chat
     user = callback_query.from_user
     if not await common.can_user_manage_bot_in_chat(user, chat):
         user_config = await database.get_user_config(user)
@@ -144,10 +171,6 @@ async def config_chat(
                 chat_config.unpin_channel_pin_enabled = (
                     not chat_config.unpin_channel_pin_enabled
                 )
-            case "message_search_enabled":
-                chat_config.message_search_enabled = (
-                    not chat_config.message_search_enabled
-                )
             case "quote_pin_message":
                 chat_config.quote_pin_message = not chat_config.quote_pin_message
             case "ai_reply":
@@ -170,6 +193,8 @@ async def config_chat(
                 chat_config.ai_reply_other_bots_enabled = (
                     not chat_config.ai_reply_other_bots_enabled
                 )
+            case "verify_enabled":
+                chat_config.verify_enabled = not chat_config.verify_enabled
             case _:
                 await callback_query.answer(
                     text=i18n.t("bot.msg.unknown_operation", locale=lang),
@@ -177,12 +202,12 @@ async def config_chat(
                 return
         chat_config = await database.update_chat_config(chat, chat_config)
         await callback_query.edit_message_reply_markup(
-            ChatConfigMarkup(chat_config, lang).build()
+            ChatConfigMarkup(chat_config, lang, chat.id).build()
         )
         return
     if data[1] == "save":
         await callback_query.edit_message_text(
             text=i18n.t("bot.msg.group_config_saved", locale=lang),
-            reply_markup=None,
+            reply_markup=None,  # type: ignore
         )
         return

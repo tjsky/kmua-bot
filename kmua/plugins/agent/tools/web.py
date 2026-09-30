@@ -1,17 +1,19 @@
-import asyncio
+import mimetypes
 import re
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 from urllib.parse import urlparse
 
 import aiohttp
-from crawl4ai import AsyncWebCrawler, CacheMode, CrawlerRunConfig, HTTPCrawlerConfig
-from crawl4ai.async_crawler_strategy import AsyncHTTPCrawlerStrategy
-from crawl4ai.models import CrawlResult, StringCompatibleMarkdown
 from pydantic_ai import ModelRetry, RunContext
 from pyrogram.errors import ChannelInvalid, ChannelPrivate, MessageIdsEmpty
 from pyrogram.types import Message
 
+from kmua.common.safe_http import (
+    UnsafeUrlError,
+    is_safe_web_url,
+    safe_download,
+)
 from kmua.common.utils import is_explicit_reply
 from kmua.config import app_config
 from kmua.database import get_chat_by_id
@@ -21,16 +23,6 @@ from .. import datatype
 
 MAX_CONTENT_LENGTH = 64000
 
-_http_strategy = AsyncHTTPCrawlerStrategy(
-    browser_config=HTTPCrawlerConfig(method="GET", verify_ssl=False)
-)
-
-_run_config = CrawlerRunConfig(
-    cache_mode=CacheMode.ENABLED,
-    word_count_threshold=10,
-    excluded_tags=["nav", "footer", "aside", "script", "style"],
-)
-
 
 @dataclass
 class WebFetchResult:
@@ -38,6 +30,8 @@ class WebFetchResult:
     url: str
     content: str | None = None
     error: str | None = None
+    binary: bytes | None = None
+    media_type: str | None = None
 
 
 def _truncate(text: str) -> str:
@@ -49,27 +43,89 @@ def _truncate(text: str) -> str:
     return text
 
 
+def _looks_like_text(raw: bytes) -> bool:
+    if not raw:
+        return True
+    if b"\x00" in raw:
+        return False
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    controls = sum(1 for char in text if ord(char) < 32 and char not in "\n\r\t\f")
+    return controls <= max(1, len(text) // 100)
+
+
+def _is_text_media_type(media_type: str | None) -> bool:
+    if not media_type:
+        return False
+    base = media_type.split(";", 1)[0].strip().lower()
+    return base.startswith("text/") or base in {
+        "application/json",
+        "application/javascript",
+        "application/ld+json",
+        "application/xml",
+        "application/xhtml+xml",
+        "application/yaml",
+        "application/toml",
+        "application/x-www-form-urlencoded",
+    }
+
+
+def _response_text(raw: bytes) -> str:
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(raw, "html.parser")
+        for tag in soup(["script", "style", "nav", "footer", "aside"]):
+            tag.decompose()
+        return soup.get_text("\n", strip=True)
+    except Exception:
+        return raw.decode("utf-8", errors="replace")
+
+
 async def _fetch_http(url: str) -> WebFetchResult:
-    timeout = app_config.agent_webfetch_timeout
-    async with AsyncWebCrawler(crawler_strategy=_http_strategy) as crawler:
-        coro = crawler.arun(url, config=_run_config)
-        if timeout and timeout > 0:
-            raw = await asyncio.wait_for(coro, timeout=timeout)
-        else:
-            raw = await coro
-    result = cast(CrawlResult, raw)
-    if not result.success:
+    timeout = app_config.agent_webfetch_timeout or 30
+    try:
+        downloaded = await safe_download(url, timeout=float(timeout))
+    except UnsafeUrlError as e:
+        return WebFetchResult(success=False, url=url, error=str(e))
+    except TimeoutError:
+        logger.warning(f"webfetch timed out for {url}")
         return WebFetchResult(
             success=False,
             url=url,
-            error=result.error_message or "Fetch failed",
+            error="Fetch timed out",
         )
-    md = result.markdown
-    text: str
-    if isinstance(md, StringCompatibleMarkdown):
-        text = md.raw_markdown
-    else:
-        text = str(md) if md else ""
+    except Exception as e:
+        logger.error(f"webfetch error for {url}: {e.__class__.__name__}: {e}")
+        return WebFetchResult(
+            success=False,
+            url=url,
+            error=f"{e.__class__.__name__}: {e}",
+        )
+    media_type = downloaded.media_type
+    guessed, _ = mimetypes.guess_type(urlparse(url).path)
+    guessed_is_binary = bool(guessed and not _is_text_media_type(guessed))
+    is_binary = bool(
+        (
+            media_type
+            and (
+                not _is_text_media_type(media_type)
+                or not _looks_like_text(downloaded.data)
+            )
+        )
+        or guessed_is_binary
+        or (media_type is None and not _looks_like_text(downloaded.data))
+    )
+    if is_binary:
+        return WebFetchResult(
+            success=True,
+            url=url,
+            binary=downloaded.data,
+            media_type=media_type or "application/octet-stream",
+        )
+    text = _response_text(downloaded.data)
     if not text.strip():
         return WebFetchResult(
             success=False,
@@ -80,6 +136,10 @@ async def _fetch_http(url: str) -> WebFetchResult:
 
 
 async def _fetch_crawl_api(url: str) -> WebFetchResult:
+    if not is_safe_web_url(url):
+        return WebFetchResult(
+            success=False, url=url, error="URL is not a public internet address"
+        )
     api_url = app_config.agent_crawl_api_url
     if not api_url:
         raise ValueError("Crawl API URL is not configured")
@@ -97,20 +157,42 @@ async def _fetch_crawl_api(url: str) -> WebFetchResult:
     }
 
     timeout = aiohttp.ClientTimeout(total=app_config.agent_crawl_api_timeout)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(
-            f"{api_url.rstrip('/')}/crawl",
-            json=payload,
-            headers=headers,
-        ) as resp:
-            if resp.status == 408:
-                return WebFetchResult(
-                    success=False,
-                    url=url,
-                    error="Crawl API timed out",
-                )
-            resp.raise_for_status()
-            data: dict[str, Any] = await resp.json()
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                f"{api_url.rstrip('/')}/crawl",
+                json=payload,
+                headers=headers,
+            ) as resp:
+                if resp.status == 408:
+                    return WebFetchResult(
+                        success=False,
+                        url=url,
+                        error="Crawl API timed out",
+                    )
+                if resp.status in (401, 403):
+                    return WebFetchResult(
+                        success=False,
+                        url=url,
+                        error=(f"Crawl API rejected the request (HTTP {resp.status})"),
+                    )
+                resp.raise_for_status()
+                data: dict[str, Any] = await resp.json()
+    except TimeoutError:
+        return WebFetchResult(
+            success=False,
+            url=url,
+            error=(
+                "Crawl API timed out after "
+                f"{app_config.agent_crawl_api_timeout}s (agent_crawl_api_timeout)"
+            ),
+        )
+    except (aiohttp.ClientConnectionError, aiohttp.ClientPayloadError) as e:
+        return WebFetchResult(
+            success=False,
+            url=url,
+            error=await _crawl_api_error(api_url, e),
+        )
 
     if not data.get("success"):
         results = data.get("results") or []
@@ -140,8 +222,35 @@ async def _fetch_crawl_api(url: str) -> WebFetchResult:
     return WebFetchResult(success=True, url=url, content=_truncate(text))
 
 
+async def _crawl_api_error(api_url: str, error: Exception) -> str:
+    """Explain a crawl API connection failure from the one endpoint needing no token.
+
+    Since 0.9 the server serves an authenticated API only: without
+    `CRAWL4AI_API_TOKEN` it binds the container's own loopback, and a published port
+    then accepts and resets every request. `/health` stays public, so probing it
+    tells "nothing is serving that address" apart from "the server dropped this
+    request".
+    """
+    base = api_url.rstrip("/")
+    status: int | None = None
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
+            async with s.get(f"{base}/health") as resp:
+                status = resp.status
+    except Exception:
+        status = None
+
+    if status is None:
+        return (
+            f"Crawl API at {base} dropped the connection ({error.__class__.__name__})."
+        )
+    return (
+        f"Crawl API at {base} answered /health with HTTP {status} but dropped the "
+        f"crawl request ({error.__class__.__name__})"
+    )
+
+
 def _is_telegram_url(url: str) -> bool:
-    """Check if URL is a Telegram domain link."""
     try:
         parsed = urlparse(url)
         return parsed.netloc.lower() in ("t.me", "telegram.me")
@@ -150,25 +259,17 @@ def _is_telegram_url(url: str) -> bool:
 
 
 def _parse_telegram_message_url(url: str) -> tuple[str | None, int | None, int | None]:
-    """Parse Telegram message URL and return (username_or_chat_id, message_id, comment_id).
+    """Parse a Telegram message URL into (username_or_chat_id, message_id, comment_id).
 
-    Returns:
-        Tuple of (username_or_chat_id, message_id, comment_id).
-        For private chats (t.me/c/xxx), username_or_chat_id is the chat_id as string (without -100 prefix).
-        For public chats (t.me/username), username_or_chat_id is the username.
-        comment_id is only present for comments section URLs.
+    For private chats (t.me/c/xxx), username_or_chat_id is the chat id as a
+    string without the -100 prefix; for public chats (t.me/username) it is the
+    username. comment_id is only present for comments section URLs.
     """
     if not _is_telegram_url(url):
         return (None, None, None)
 
-    # Match patterns:
-    # https://t.me/c/23333333/2252 (private chat)
-    # https://t.me/group_username/142727 (public chat)
-    # https://t.me/channel_username/14816?comment=142730 (comment)
     patterns = [
-        # Private chat: https://t.me/c/123456789/123
         r"https?://t\.me/c/(\d+)/(\d+)",
-        # Public chat or comment: https://t.me/username/123 or https://t.me/username/123?comment=456
         r"https?://t\.me/([a-zA-Z0-9_]{5,32})/(\d+)(?:\?comment=(\d+))?",
     ]
 
@@ -206,13 +307,10 @@ async def _fetch_telegram_message(
     current_chat_id = ctx.deps.chat_id
 
     try:
-        # Determine target chat
         if username_or_id.isdigit():
-            # Private chat (t.me/c/xxx)
-            # Convert to full chat_id format (-100xxxxxxxxx)
+            # t.me/c/...: convert to the full -100xxxxxxxxx chat id
             target_chat_id = int(f"-100{username_or_id}")
 
-            # Only allow if it's the current chat
             if target_chat_id != current_chat_id:
                 return WebFetchResult(
                     success=False,
@@ -220,8 +318,6 @@ async def _fetch_telegram_message(
                     error="This is a Telegram message link but you cannot access private group/channel messages from other chats for privacy reasons",
                 )
         else:
-            # Public chat with username
-            # Check if it's the current chat by looking up in database
             current_chat_data = await get_chat_by_id(current_chat_id)
             if (
                 current_chat_data
@@ -230,13 +326,11 @@ async def _fetch_telegram_message(
             ):
                 target_chat_id = current_chat_id
             else:
-                # It's a different public chat, allow it but we'll try to get it by username
                 target_chat_id = username_or_id
 
-        # Fetch the message
         if comment_id:
-            # It's a comment - fetch the comment message
-            # Comments are in a linked discussion group, we need to get the original post first
+            # The comment lives in the linked discussion group; fetch the
+            # original post first.
             try:
                 original_msg = await client.get_messages(target_chat_id, message_id)
                 if not original_msg:
@@ -246,10 +340,7 @@ async def _fetch_telegram_message(
                         error="Original message not found",
                     )
 
-                # The comment is in the linked chat (discussion group)
                 if original_msg.link:
-                    # Try to fetch the comment directly if possible
-                    # Comments are typically in the discussion group
                     comment_msg = await client.get_messages(target_chat_id, comment_id)
                     if comment_msg:
                         return _format_telegram_message(
@@ -260,7 +351,6 @@ async def _fetch_telegram_message(
                 # Fallback: try to fetch at least the original message
                 pass
 
-        # Fetch main message
         message = await client.get_messages(target_chat_id, message_id)
         if not message:
             return WebFetchResult(
@@ -291,14 +381,11 @@ async def _fetch_telegram_message(
 def _format_telegram_message(
     message: Message, url: str, is_comment: bool = False
 ) -> WebFetchResult:
-    """Format a Telegram message into WebFetchResult."""
     parts = []
 
-    # Add prefix for comments
     if is_comment:
         parts.append("[This is a comment/reply message]")
 
-    # Sender info
     sender_name = "Unknown"
     if message.from_user:
         sender_name = message.from_user.first_name or ""
@@ -311,12 +398,10 @@ def _format_telegram_message(
 
     parts.append(f"From: {sender_name}")
 
-    # Date
     if message.date:
         parts.append(f"Date: {message.date.isoformat()}")
 
-    # Message content
-    content_parts = []
+    content_parts: list[str] = []
 
     if message.text:
         content_parts.append(message.text)
@@ -324,7 +409,6 @@ def _format_telegram_message(
     if message.caption:
         content_parts.append(f"[Caption]: {message.caption}")
 
-    # Handle media types
     if message.photo:
         content_parts.append("[Contains photo]")
     elif message.video:
@@ -342,7 +426,6 @@ def _format_telegram_message(
     elif message.poll:
         content_parts.append(f"[Contains poll: {message.poll.question}]")
 
-    # Forward info
     if message.forward_from or message.forward_from_chat:
         if message.forward_from_chat:
             fwd_name = message.forward_from_chat.title or "Unknown channel"
@@ -354,7 +437,6 @@ def _format_telegram_message(
             )
         parts.append(f"Forwarded from: {fwd_name}")
 
-    # Reply info
     if is_explicit_reply(message) and message.reply_to_message:
         parts.append(f"[This is a reply to message {message.reply_to_message.id}]")
 
@@ -365,20 +447,22 @@ def _format_telegram_message(
     return WebFetchResult(success=True, url=url, content=_truncate(content))
 
 
-async def webfetch(ctx: RunContext[datatype.ContextDeps], url: str) -> WebFetchResult:
+async def fetch_web_page(
+    ctx: RunContext[datatype.ContextDeps], url: str
+) -> WebFetchResult:
     """Fetch a web page and return its content as Markdown.
-    Args:
-        url: Full URL to fetch (http:// or https://).
+
+    Internal helper backing the http(s):// branch of the agent's read tool.
     """
     if not url.startswith(("http://", "https://")):
         raise ModelRetry("URL must start with http:// or https://")
+    if not is_safe_web_url(url):
+        raise ModelRetry("URL is not a public internet address")
 
-    # Try to fetch Telegram messages directly if it's a Telegram link
     if _is_telegram_url(url):
         tg_result = await _fetch_telegram_message(ctx, url)
         if tg_result is not None:
             return tg_result
-        # If tg_result is None, fall through to normal web fetching
 
     try:
         if app_config.agent_crawl_api_url:
@@ -400,4 +484,4 @@ async def webfetch(ctx: RunContext[datatype.ContextDeps], url: str) -> WebFetchR
         )
 
 
-__all__ = ["webfetch"]
+__all__ = ["fetch_web_page"]

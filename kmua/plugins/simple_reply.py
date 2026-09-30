@@ -20,7 +20,7 @@ async def word_reply(client: Client, message: pyrogram.types.Message):
     if not user:
         return
     user_config = await database.get_user_config(user)
-    if not message.text or not client.me:
+    if not message.text or not client.me or not client.me.username:
         return
     text = zhconv.convert(
         message.text.replace(client.me.username, "").strip().lower(), "zh-cn"
@@ -138,6 +138,12 @@ _filter = (
     & (_reply_me_filter | filters.private | _mention_me_filter)
     & _not_bottle_reply_filter
     & ~pyrogram.filters.regex("|".join([r.pattern for r in manyacg.ARTWORK_ALL_REGEX]))
+    # WeChat article links are handled by the wechat parser (group -1); the
+    # keyword reply must not double-respond to them.
+    & ~pyrogram.filters.regex(r"https?://mp\.weixin\.qq\.com/s/[A-Za-z0-9_-]+")
+    # Twitter/X links are handled by the native tweet parser (group -1); the
+    # keyword reply must not double-respond to them.
+    & ~pyrogram.filters.regex(r"(?:twitter|x)\.com/[^/]+/status/\d+")
 )
 
 _chat_command_filter = filters.command("chat") & _not_bottle_reply_filter

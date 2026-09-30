@@ -9,6 +9,17 @@ log_retention_days = 30
 log_level = "INFO"
 lang = "zh-CN"
 
+# Telegram Mini App 管理面板.
+# webapp = false
+# webapp_host = "0.0.0.0"
+# webapp_port = 8180
+# 公网 HTTPS 地址, 启用面板时必填 (Telegram 不会打开 HTTP 的 Mini App)
+# webapp_url = ""
+# 在 BotFather 用 /newapp 注册的 Mini App short name.
+# 群内 /config 的深链 t.me/<bot>/<short_name>?startapp=... 需要它
+# webapp_short_name = "panel"
+# webapp_menu_button = true
+
 redis = false
 redis_endpoint = "localhost"
 redis_port = 6379
@@ -28,24 +39,29 @@ agent_prompt = ''''''
 #   url     = base URL of the API endpoint
 #   key     = API key
 #   api_type = "chat_completions" (default, broadly compatible) or "responses" (OpenAI Responses API)
+#   proxy   = optional HTTP proxy for this provider (http://, https://, socks5://)
+#             e.g. proxy = "http://127.0.0.1:7890" or "socks5://user:pass@127.0.0.1:1080"
+#             requires httpx[socks] for socks5 (already pulled via ddgs, or pip install httpx[socks])
+#
+# Global fallback for all providers without an explicit proxy:
+# agent_proxy = "http://127.0.0.1:7890"
 #
 # Example:
 # [agent_providers.default]
 # url = "https://api.openai.com/v1"
 # key = "sk-..."
 # api_type = "chat_completions"
+# # proxy = "http://127.0.0.1:7890"
 #
 # [agent_providers.openai_native]
 # url = "https://api.openai.com/v1"
 # key = "sk-..."
 # api_type = "responses"
-
 manyacg_api_url = "https://api.manyacg.top/v1"
 manyacg_api_key = ""
 manyacg_channel = "MoreACG"
 manyacg_bot = "kirakabot"
 manyacg_setu_cd = 1
-manyacg_hybrid_search = true
 
 # Infographic API https://github.com/krau/infographic-api
 # infographic = false
@@ -56,3 +72,10 @@ manyacg_hybrid_search = true
 # Set to 0 to disable.
 # agent_periodic_sticker_interval = 5
 # agent_periodic_reaction_interval = 3
+
+# RSS 订阅推送
+# rss_enabled = true
+# 白名单模式: 默认开启, 只有 owner 在面板中放行的 chat 可以订阅
+# rss_whitelist_mode = true
+# 轮询间隔(分钟)
+# rss_interval = 30

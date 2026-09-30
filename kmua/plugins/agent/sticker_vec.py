@@ -14,8 +14,7 @@ from kmua.logger import logger
 _DB_PATH: Path | None = None
 _INITIALIZED = False
 
-# 批量处理配置
-_EVICT_BATCH_SIZE = 100  # 每次清理的最大记录数
+_EVICT_BATCH_SIZE = 100
 
 
 def _db_path() -> Path:
@@ -26,21 +25,38 @@ def _db_path() -> Path:
     return _DB_PATH
 
 
+# Serializes writes: every sticker task opens its own connection, and SQLite
+# allows a single writer at a time, so concurrent upserts/evicts used to
+# fail with "database is locked".
+_write_lock = asyncio.Lock()
+
+
 @asynccontextmanager
-async def _connect() -> AsyncGenerator[aiosqlite.Connection]:
-    async with aiosqlite.connect(_db_path()) as db:
-        await db.enable_load_extension(True)
-        await db.load_extension(sqlite_vec.loadable_path())
-        await db.enable_load_extension(False)
-        yield db
+async def _connect(*, write: bool = False) -> AsyncGenerator[aiosqlite.Connection]:
+    if write:
+        await _write_lock.acquire()
+    try:
+        async with aiosqlite.connect(_db_path()) as db:
+            # WAL lets readers and the single writer proceed without blocking
+            # each other; busy_timeout turns lock contention into a wait
+            # instead of an immediate error (e.g. external processes).
+            await db.execute("PRAGMA journal_mode=WAL")
+            await db.execute("PRAGMA busy_timeout=5000")
+            await db.enable_load_extension(True)
+            await db.load_extension(sqlite_vec.loadable_path())
+            await db.enable_load_extension(False)
+            yield db
+    finally:
+        if write:
+            _write_lock.release()
 
 
-async def init() -> None:
+async def init(dims: int | None = None) -> None:
     global _INITIALIZED
     if _INITIALIZED:
         return
-    dims = app_config.agent_sticker_embed_dimensions
-    async with _connect() as db:
+    effective_dims = dims or app_config.agent_sticker_embed_dimensions
+    async with _connect(write=True) as db:
         await db.executescript(f"""
             CREATE TABLE IF NOT EXISTS stickers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,7 +70,7 @@ async def init() -> None:
             CREATE INDEX IF NOT EXISTS idx_stickers_chat ON stickers(chat_id);
             CREATE INDEX IF NOT EXISTS idx_stickers_uid ON stickers(file_unique_id, chat_id);
             CREATE VIRTUAL TABLE IF NOT EXISTS sticker_embeddings
-                USING vec0(embedding float[{dims}]);
+                USING vec0(embedding float[{effective_dims}]);
         """)
         await db.commit()
     _INITIALIZED = True
@@ -67,12 +83,8 @@ def _pack(vector: list[float]) -> bytes:
 async def _lazy_evict(db: aiosqlite.Connection, chat_id: int | None = None) -> None:
     """清理过期贴纸记录，分批处理避免阻塞事件循环。
 
-    智能清理策略：当聊天室的贴纸数量少于配置的阈值时，保留所有贴纸不逐出。
-    这确保小群聊不会频繁丢失贴纸记忆。
-
-    Args:
-        db: 数据库连接
-        chat_id: 可选的聊天室ID，用于检查该聊天室的贴纸数量
+    当聊天室的贴纸数量少于配置的阈值时，保留所有贴纸不逐出，
+    确保小群聊不会频繁丢失贴纸记忆。
     """
     ttl = app_config.agent_sticker_ttl
     if ttl <= 0:
@@ -80,7 +92,6 @@ async def _lazy_evict(db: aiosqlite.Connection, chat_id: int | None = None) -> N
 
     min_keep = app_config.agent_sticker_min_keep_count
 
-    # 如果指定了 chat_id，检查该聊天室的贴纸总数
     if chat_id is not None and min_keep > 0:
         count_cursor = await db.execute(
             "SELECT COUNT(*) FROM stickers WHERE chat_id = ?", (chat_id,)
@@ -97,14 +108,12 @@ async def _lazy_evict(db: aiosqlite.Connection, chat_id: int | None = None) -> N
 
     cutoff = int(time.time()) - ttl
 
-    # 构建查询条件
     where_clause = "last_seen < ?"
     params: list = [cutoff, _EVICT_BATCH_SIZE]
     if chat_id is not None:
         where_clause = "last_seen < ? AND chat_id = ?"
         params = [cutoff, chat_id, _EVICT_BATCH_SIZE]
 
-    # 使用 LIMIT 分批查询，避免一次加载过多数据
     rows = await db.execute_fetchall(
         f"SELECT id FROM stickers WHERE {where_clause} LIMIT ?",
         params,
@@ -127,7 +136,6 @@ async def _lazy_evict(db: aiosqlite.Connection, chat_id: int | None = None) -> N
 
 async def exists(file_unique_id: str, chat_id: int) -> bool:
     async with _connect() as db:
-        # 使用 fetchone 更高效，避免不必要的列表转换
         cursor = await db.execute(
             "SELECT 1 FROM stickers WHERE file_unique_id = ? AND chat_id = ? LIMIT 1",
             (file_unique_id, chat_id),
@@ -143,10 +151,9 @@ async def upsert(
     description: str,
     embedding: list[float],
 ) -> None:
-    async with _connect() as db:
+    async with _connect(write=True) as db:
         await _lazy_evict(db, chat_id)
         now = int(time.time())
-        # 使用 fetchone 替代 execute_fetchall + list，减少阻塞
         cursor = await db.execute(
             "SELECT id FROM stickers WHERE file_unique_id = ? AND chat_id = ? LIMIT 1",
             (file_unique_id, chat_id),
@@ -179,8 +186,44 @@ async def upsert(
         await db.commit()
 
 
+async def delete(file_unique_id: str, chat_id: int) -> bool:
+    """Remove one sticker from a chat's memory store; False when absent."""
+    async with _connect(write=True) as db:
+        cursor = await db.execute(
+            "SELECT id FROM stickers WHERE file_unique_id = ? AND chat_id = ? LIMIT 1",
+            (file_unique_id, chat_id),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return False
+        row_id = row[0]
+        await db.execute("DELETE FROM sticker_embeddings WHERE rowid = ?", (row_id,))
+        await db.execute("DELETE FROM stickers WHERE id = ?", (row_id,))
+        await db.commit()
+        return True
+
+
+async def clear(chat_id: int) -> int:
+    """Remove every sticker stored for a chat; returns how many were deleted."""
+    async with _connect(write=True) as db:
+        cursor = await db.execute(
+            "SELECT id FROM stickers WHERE chat_id = ?", (chat_id,)
+        )
+        rows = await cursor.fetchall()
+        if not rows:
+            return 0
+        ids = [row[0] for row in rows]
+        placeholders = ",".join("?" * len(ids))
+        await db.execute(
+            f"DELETE FROM sticker_embeddings WHERE rowid IN ({placeholders})", ids
+        )
+        await db.execute(f"DELETE FROM stickers WHERE id IN ({placeholders})", ids)
+        await db.commit()
+        return len(ids)
+
+
 async def touch(file_unique_id: str, chat_id: int) -> None:
-    async with _connect() as db:
+    async with _connect(write=True) as db:
         await db.execute(
             "UPDATE stickers SET last_seen=? WHERE file_unique_id=? AND chat_id=?",
             (int(time.time()), file_unique_id, chat_id),
@@ -204,7 +247,7 @@ async def search(
     k: int = 5,
 ) -> list[tuple[str, str, float]]:
     """Return up to k results as (file_id, description, distance)."""
-    async with _connect() as db:
+    async with _connect(write=True) as db:
         await _lazy_evict(db, chat_id)
         rows = await db.execute_fetchall(
             """
